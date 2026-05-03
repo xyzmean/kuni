@@ -401,7 +401,11 @@ AFuture<> AppBase::diaryDumpMessages() {
             .freeformBody = std::move(take),
         });
     }
-    AFileOutputStream(WORKING_MEMORY_PATH) << co_await importantThingsToRemember;
+    {
+        // do it in separate lines: first, we wait for LLM response, second, we overwrite file (destructive operation).
+        auto workingMemoryMd = co_await importantThingsToRemember;
+        AFileOutputStream(WORKING_MEMORY_PATH) << workingMemoryMd;
+    }
     mTemporaryContext.clear();
 }
 
