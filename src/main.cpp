@@ -1301,6 +1301,11 @@ Some channels have reactions enabled. In that case, you can sometimes react with
                         }
                         mTelegram->sendQuery(TelegramClient::toPtr(td::td_api::sendChatAction(chat->id_, {}, {}, TelegramClient::toPtr(td::td_api::chatActionTyping()))));
 
+                        if (ctx.args.contains("chat_id")) {
+                            if (ctx.args["chat_id"].asLongInt() != chat->id_) {
+                                co_return "Error: you can't send messages to other chats. Open them first. You are currently in chat \"{}\""_format(chat->title_);
+                            }
+                        }
                         const auto message = ctx.args["text"].asStringOpt().valueOr("");
                         const auto photoFilename = ctx.args["photo_filename"].asStringOpt().valueOr("");
                         const auto audioFilename = ctx.args["audio_filename"].asStringOpt().valueOr("");
