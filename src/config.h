@@ -492,7 +492,12 @@ world) in the following format:
      */
     static constexpr auto CHAT_MAX_CHARS_LENGTH = 5000;
 
-    static constexpr auto TEMPERATURE = 0.2f; // средняя температура по больнице
+    static const AOptional<double> TEMPERATURE = 0.2; // средняя температура по больнице
+    static const AOptional<double> TOP_P = std::nullopt; // qwen3.5:9b: 0.85
+    static const AOptional<double> TOP_K = std::nullopt; // qwen3.5:9b: 20
+    static const AOptional<double> MIN_P = std::nullopt; // qwen3.5:9b: 0.05
+    static const AOptional<double> PRESENCE_PENALTY = std::nullopt; // qwen3.5:9b: 1.5
+    static const AOptional<double> REPETITION_PENALTY = std::nullopt; // qwen3.5:9b: 1.05
 
     static constexpr auto REPEAT_YOURSELF_TRIGGER_AVG = 0.83f; // lower is stricter
     static constexpr auto REPEAT_YOURSELF_TRIGGER_MAX = REPEAT_YOURSELF_TRIGGER_AVG * 0.95f; // lower is stricter

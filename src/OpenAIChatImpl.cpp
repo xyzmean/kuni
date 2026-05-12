@@ -78,8 +78,26 @@ AJson OpenAIChatImpl::makeQueryString(Params params, AVector<IOpenAIChat::Messag
         { "include_sources", true },
         { "model", params.config.model },
         { "tools", params.tools },
-        { "temperature", config::TEMPERATURE },
     };
+
+    if (config::TEMPERATURE) {
+        json["temperature"] = *config::TEMPERATURE;
+    }
+    if (config::TOP_P) {
+        json["top_p"] = *config::TOP_P;
+    }
+    if (config::TOP_K) {
+        json["top_k"] = *config::TOP_K;
+    }
+    if (config::MIN_P) {
+        json["min_p"] = *config::MIN_P;
+    }
+    if (config::PRESENCE_PENALTY) {
+        json["presence_penalty"] = *config::PRESENCE_PENALTY;
+    }
+    if (config::REPETITION_PENALTY) {
+        json["repeat_penalty"] = *config::REPETITION_PENALTY;
+    }
     if (params.seed) {
         json["seed"] = *params.seed;
     }
