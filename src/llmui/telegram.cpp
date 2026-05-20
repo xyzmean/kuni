@@ -14,14 +14,7 @@
 
 #include <range/v3/algorithm/max_element.hpp>
 
-AFuture<AString> llmui::extractSenderName(ITelegramClient& telegram, td::td_api::MessageSender& sender) {
-    int64_t senderId {};
-    td::td_api::downcast_call(
-        sender,
-        aui::lambda_overloaded {
-          [&](const td::td_api::messageSenderUser& user) { senderId = user.user_id_; },
-          [&](const td::td_api::messageSenderChat& chat) { senderId = chat.chat_id_; },
-        });
+static AFuture<AString> extractSenderName(ITelegramClient& telegram, int64_t senderId) {
     AString senderName;
     if (senderId == telegram.myId()) {
         senderName = "You (Kuni)";
@@ -45,8 +38,19 @@ AFuture<AString> llmui::extractSenderName(ITelegramClient& telegram, td::td_api:
         }
     }
 
-    checkForMaliciousPayloads(senderName);
+    llmui::checkForMaliciousPayloads(senderName);
     co_return senderName;
+}
+
+AFuture<AString> llmui::extractSenderName(ITelegramClient& telegram, td::td_api::MessageSender& sender) {
+    int64_t senderId {};
+    td::td_api::downcast_call(
+        sender,
+        aui::lambda_overloaded {
+          [&](const td::td_api::messageSenderUser& user) { senderId = user.user_id_; },
+          [&](const td::td_api::messageSenderChat& chat) { senderId = chat.chat_id_; },
+        });
+    return extractSenderName(telegram, senderId);
 }
 
 AFuture<APath> llmui::fetchMedia(ITelegramClient& telegram, td::td_api::object_ptr<td::td_api::file>& file) {
@@ -264,14 +268,7 @@ AFuture<AString> llmui::formatChatHistoryMessage(
                     return td::td_api::int53(0);
             }
         }();
-        if (forwardedFromChatId != 0) {
-            try {
-                formattedXmlTag +=
-                    (co_await telegram.sendQueryWithResult(ITelegramClient::toPtr(td::td_api::getChat(forwardedFromChatId))))
-                        ->title_;
-            } catch (const AException& e) {
-            }
-        }
+        formattedXmlTag += co_await extractSenderName(telegram, forwardedFromChatId);
         formattedXmlTag += "\"";
 
         if (!senderName.empty()) {

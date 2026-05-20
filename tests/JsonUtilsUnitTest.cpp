@@ -104,6 +104,13 @@ TEST(JsonAsLongIntUnit, StringPlainInteger) {
     EXPECT_EQ(*result, 625207005);
 }
 
+TEST(JsonAsLongIntUnit, StringPlainInteger2) {
+    AJson v("8358306444");
+    auto result = util::jsonAsLongInt(v);
+    ASSERT_TRUE(result.hasValue());
+    EXPECT_EQ(*result, 8358306444);
+}
+
 TEST(JsonAsLongIntUnit, StringNegative) {
     AJson v("-100");
     auto result = util::jsonAsLongInt(v);
