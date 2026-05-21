@@ -52,5 +52,14 @@ struct ITelegramClient {
         return td::td_api::make_object<T>(std::forward<T>(t));
     }
 
+    enum class ConnectionState {
+        INITIALIZING,
+        CONNECTING,
+        CONNECTING_TO_PROXY,
+        UPDATING,
+        WAITING_FOR_NETWORK,
+        CONNECTED,
+    } connectionState = ConnectionState::INITIALIZING;
+
     emits<> loggedIn;
 };

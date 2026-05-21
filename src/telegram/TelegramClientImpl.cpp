@@ -58,6 +58,27 @@ void TelegramClientImpl::initClientManager() {
 
 void TelegramClientImpl::update() {
     ALOG_TRACE(LOG_TAG) << "update";
+
+    switch (connectionState) {
+        case ConnectionState::INITIALIZING:
+            ALogger::info(LOG_TAG) << "Connection state: initializing...";
+            break;
+        case ConnectionState::CONNECTED:
+            break;
+        case ConnectionState::CONNECTING:
+            ALogger::info(LOG_TAG) << "Connection state: connecting... (check VPN/proxy settings)";
+            break;
+        case ConnectionState::CONNECTING_TO_PROXY:
+            ALogger::info(LOG_TAG) << "Connection state: connecting to proxy...";
+            break;
+        case ConnectionState::UPDATING:
+            ALogger::info(LOG_TAG) << "Connection state: updating...";
+            break;
+        case ConnectionState::WAITING_FOR_NETWORK:
+            ALogger::info(LOG_TAG) << "Connection state: waiting for network...";
+            break;
+    }
+
     mQueryCountLastUpdate = 0;
     for (;;) {
         auto response = mClientManager->receive(0);
@@ -143,11 +164,23 @@ void TelegramClientImpl::commonHandler(td::tl::unique_ptr<td::td_api::Object> ob
             },
 
             [this](td::td_api::updateConnectionState& u) {
-                td::td_api::downcast_call(
-                    *u.state_, aui::lambda_overloaded{
-                                   [&](td::td_api::connectionStateReady&) { mWaitForConnection.supplyValue(); },
-                                   [&](auto&&) {},
-                               });
+              td::td_api::downcast_call(
+                  *u.state_,
+                  aui::lambda_overloaded {
+                    [&](td::td_api::connectionStateReady&) {
+                        connectionState = ConnectionState::CONNECTED;
+                        mWaitForConnection.supplyValue();
+                    },
+                    [&](td::td_api::connectionStateConnecting&) { connectionState = ConnectionState::CONNECTING; },
+                    [&](td::td_api::connectionStateConnectingToProxy&) {
+                        connectionState = ConnectionState::CONNECTING_TO_PROXY;
+                    },
+                    [&](td::td_api::connectionStateWaitingForNetwork&) {
+                        connectionState = ConnectionState::WAITING_FOR_NETWORK;
+                    },
+
+                    [&](td::td_api::connectionStateUpdating&) { connectionState = ConnectionState::UPDATING; },
+            });
             },
             [this](td::td_api::updateOption& u) {
                 if (u.name_ == "my_id") {
