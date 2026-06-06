@@ -122,7 +122,7 @@ OpenAITools::Tool tools::sendTelegramMessage(
             if (!messageContainsCode && ranges::count_if(ctx.allToolCalls, [](const IOpenAIChat::Message::ToolCall& tc) {
                 return tc.function.name == "send_telegram_message";
             }) == 1) {
-                if (glm::clamp((message.length() - 15.f) / 100.f, 0.f, 1.f) * 0.5f > std::uniform_real_distribution(0.f, 1.f)(gRandomEngine)) {
+                if (glm::clamp((message.length() - 50.f) / 200.f, 0.f, 1.f) * 0.5f > std::uniform_real_distribution(0.f, 1.f)(gRandomEngine)) {
                     AString msg = "Error: you must split your response into small separate messages.\n"
                         "Example:\n"
                         "- ахахаххаа\n"
