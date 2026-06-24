@@ -4,7 +4,11 @@
 
 #include "IOpenAIChat.h"
 
-AJson AJsonConv<AVector<IOpenAIChat::Message>>::toJson(const AVector<IOpenAIChat::Message>& v) {
+#include "AUI/Util/ARandom.h"
+
+#include <range/v3/view/zip.hpp>
+
+AJson AJsonConv<IOpenAIChat::Session>::toJson(const IOpenAIChat::Session& v) {
     AJson::Array result;
     for (const auto& message: v) {
         // reverse engineered from vscode copilot plugin
@@ -53,6 +57,30 @@ AJson AJsonConv<AVector<IOpenAIChat::Message>>::toJson(const AVector<IOpenAIChat
     return result;
 }
 
+void AJsonConv<IOpenAIChat::Session, void>::fromJson(AJson json, IOpenAIChat::Session& dst) {
+    dst.resize(json.asArray().size());
+    for (const auto&[in, out] : ranges::views::zip(json.asArray(), dst)) {
+        // for better compat
+        if (in["tool_calls"].isArray()) {
+            aui::from_json(in["tool_calls"], out.tool_calls);
+        }
+        out.reasoning = in["reasoning"].asStringOpt().valueOr("");
+        out.reasoning_content  = in["reasoning_content"].asStringOpt().valueOr("");
+        out.content  = in["content"].asStringOpt().valueOr("");
+    }
+}
+
+AString IOpenAIChat::Session::nextSessionId() {
+    static ARandom r;
+    return r.nextUuid().toString();
+}
+
+AFuture<IOpenAIChat::Response> IOpenAIChat::chat(Params params, IOpenAIChat::Session messages) {
+    auto streaming = chatStreaming(std::move(params), std::move(messages));
+    co_await streaming->completed;
+    co_return *streaming->response;
+}
+
 void AJsonConv<IOpenAIChat::Response::Usage, void>::fromJson(const AJson& v, IOpenAIChat::Response::Usage& dst) {
     aui::zero(dst);
     dst.prompt_tokens = v["prompt_tokens"].asLongIntOpt().valueOr(0);
@@ -72,4 +100,16 @@ void AJsonConv<IOpenAIChat::Response::Usage, void>::fromJson(const AJson& v, IOp
         dst.prompt_cache_miss_tokens = v["prompt_cache_miss_tokens"].asLongIntOpt() // deepseek
             .valueOr(dst.prompt_tokens - dst.prompt_cache_hit_tokens); // openrouter
     }
+}
+
+AJson AJsonConv<IOpenAIChat::Response::Usage, void>::toJson(const IOpenAIChat::Response::Usage& from) {
+    AJson dst;
+    dst["prompt_tokens"] = from.prompt_tokens;
+    dst["completion_tokens"] = from.completion_tokens;
+    dst["total_tokens"] = from.total_tokens;
+    if (from.prompt_cache_hit_tokens > 0 || from.prompt_cache_miss_tokens > 0) {
+        dst["prompt_cache_miss_tokens"] = from.prompt_cache_miss_tokens;
+        dst["prompt_cache_hit_tokens"] = from.prompt_cache_hit_tokens;
+    }
+    return dst;
 }

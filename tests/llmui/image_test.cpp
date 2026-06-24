@@ -10,21 +10,41 @@
 #include "AUI/IO/AFileOutputStream.h"
 #include "AUI/IO/AFileInputStream.h"
 #include "AUI/Image/png/PngImageLoader.h"
+#include "util/await_synchronously.h"
 
 #include <gmock/gmock.h>
 
 using namespace testing;
 
 // ---------------------------------------------------------------------------
+// Helper: streaming response with plain text content
+// ---------------------------------------------------------------------------
+static AArc<IOpenAIChat::StreamingResponse> makeStreamingTextResponse(AString content) {
+    IOpenAIChat::Message msg;
+    msg.role = IOpenAIChat::Message::Role::ASSISTANT;
+    msg.content = std::move(content);
+
+    auto result = _new<IOpenAIChat::StreamingResponse>();
+    result->response.raw = {
+        .choices = {
+            IOpenAIChat::Response::Choice{
+                .index = 0,
+                .message = std::move(msg),
+                .finish_reason = "stop",
+            },
+        },
+        .usage = { .prompt_tokens = 10, .completion_tokens = 5, .total_tokens = 15 },
+    };
+    result->completed.supplyValue();
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Mock IOpenAIChat
 // ---------------------------------------------------------------------------
 class OpenAIMock : public IOpenAIChat {
 public:
-    MOCK_METHOD(AFuture<Response>, chat, (Params params, AVector<Message> messages), (override));
-
-    ::_<StreamingResponse> chatStreaming(Params params, AVector<Message> messages) override {
-        return nullptr;
-    }
+    MOCK_METHOD((AArc<StreamingResponse>), chatStreaming, (Params params, IOpenAIChat::Session messages), (override));
     MOCK_METHOD(AFuture<std::valarray<double>>, embedding, (Params params, AString input), (override));
 };
 
@@ -35,10 +55,10 @@ public:
 TEST(LlmuiImageTest, UnsupportedMediaType) {
     auto openAI = _new<OpenAIMock>();
     // No chat calls expected — image loading fails first
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
 
-    AVector<IOpenAIChat::Message> ctx;
-    auto result = await(llmui::image(ctx, *openAI, "/nonexistent/path/to/image.jpg", "photo"));
+    IOpenAIChat::Session ctx;
+    auto result = util::await_synchronously(llmui::image(ctx, *openAI, "/nonexistent/path/to/image.jpg", "photo"));
 
     EXPECT_EQ(result, "<photo description>\nThis media type is not supported\n</photo>");
 }
@@ -48,7 +68,7 @@ TEST(LlmuiImageTest, UnsupportedMediaType) {
 // ===========================================================================
 TEST(LlmuiImageTest, CacheHit) {
     auto openAI = _new<OpenAIMock>();
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
 
     // Create a dummy image file so image loading succeeds
     auto imagePath = TEST_DATA / "llmui_image_test_dummy.png";
@@ -64,8 +84,8 @@ TEST(LlmuiImageTest, CacheHit) {
     APath cacheFile = cacheDir / "llmui_image_test_dummy.png.md";
     AFileOutputStream(cacheFile) << CACHED_CONTENT;
 
-    AVector<IOpenAIChat::Message> ctx;
-    auto result = await(llmui::image(ctx, *openAI, imagePath, "photo"));
+    IOpenAIChat::Session ctx;
+    auto result = util::await_synchronously(llmui::image(ctx, *openAI, imagePath, "photo"));
 
     EXPECT_EQ(result, "<photo description>\n{}\n</photo>"_format(CACHED_CONTENT));
 
@@ -87,28 +107,14 @@ TEST(LlmuiImageTest, SuccessWithContext) {
         PngImageLoader::save(AFileOutputStream{imagePath}, img);
     }
 
-    // Expect a chat call and return a canned response
-    IOpenAIChat::Response fakeResponse;
-    fakeResponse.choices = {
-        IOpenAIChat::Response::Choice{
-            .index = 0,
-            .message = {
-                .role = IOpenAIChat::Message::Role::ASSISTANT,
-                .content = "A test image with a cute cat.",
-            },
-            .finish_reason = "stop",
-        },
-    };
-    fakeResponse.usage = { .prompt_tokens = 10, .completion_tokens = 5, .total_tokens = 15 };
-
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
         .Times(1)
-        .WillOnce(Return(ByMove(AFuture(std::move(fakeResponse)))));
+        .WillOnce(Return(makeStreamingTextResponse("A test image with a cute cat.")));
 
-    AVector<IOpenAIChat::Message> ctx = {
+    IOpenAIChat::Session ctx = {
         { .role = IOpenAIChat::Message::Role::USER, .content = "This is context." },
     };
-    auto result = await(llmui::image(ctx, *openAI, imagePath, "photo"));
+    auto result = util::await_synchronously(llmui::image(ctx, *openAI, imagePath, "photo"));
 
     EXPECT_EQ(result, "<photo description>\nA test image with a cute cat.\n</photo>");
 
@@ -132,25 +138,12 @@ TEST(LlmuiImageTest, CustomXmlTag) {
         PngImageLoader::save(AFileOutputStream{imagePath}, img);
     }
 
-    IOpenAIChat::Response fakeResponse;
-    fakeResponse.choices = {
-        IOpenAIChat::Response::Choice{
-            .index = 0,
-            .message = {
-                .role = IOpenAIChat::Message::Role::ASSISTANT,
-                .content = "A scenic view.",
-            },
-            .finish_reason = "stop",
-        },
-    };
-    fakeResponse.usage = { .prompt_tokens = 5, .completion_tokens = 3, .total_tokens = 8 };
-
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
         .Times(1)
-        .WillOnce(Return(ByMove(AFuture(std::move(fakeResponse)))));
+        .WillOnce(Return(makeStreamingTextResponse("A scenic view.")));
 
-    AVector<IOpenAIChat::Message> ctx;
-    auto result = await(llmui::image(ctx, *openAI, imagePath, "screenshot"));
+    IOpenAIChat::Session ctx;
+    auto result = util::await_synchronously(llmui::image(ctx, *openAI, imagePath, "screenshot"));
 
     EXPECT_EQ(result, "<screenshot description>\nA scenic view.\n</screenshot>");
 

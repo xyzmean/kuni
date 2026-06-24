@@ -16,7 +16,7 @@ AString extractMessageTypeAndText(td::td_api::message& msg);
 
 [[nodiscard]]
 AFuture<>
-formatChatList(ITelegramClient& telegram, AString& result, std::span<td::td_api::object_ptr<td::td_api::chat>> chats);
+formatChatList(ITelegramClient& telegram, AString& result, std::span<_<td::td_api::chat>> chats);
 
 [[nodiscard]]
 AFuture<AString> formatChatHistoryMessage(
@@ -29,4 +29,7 @@ AFuture<AString> formatChatHistoryMessage(
 
 [[nodiscard]]
 AFuture<APath> fetchMedia(ITelegramClient& telegram, td::td_api::object_ptr<td::td_api::file>& file);
+
+[[nodiscard]]
+AString formatLinkPreview(const td::td_api::linkPreview& preview);
 }   // namespace llmui

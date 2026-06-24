@@ -5,6 +5,7 @@
 #include "../common.h"
 #include "AUI/Thread/AAsyncHolder.h"
 #include "AUI/Thread/AEventLoop.h"
+#include "util/await_synchronously.h"
 
 #include <gmock/gmock.h>
 
@@ -14,11 +15,7 @@ namespace {
 // ---------------------------------------------------------------------------
 class OpenAIMock : public IOpenAIChat {
 public:
-    MOCK_METHOD(AFuture<Response>, chat, (Params params, AVector<Message> messages), (override));
-
-    ::_<StreamingResponse> chatStreaming(Params params, AVector<Message> messages) override {
-        return nullptr;
-    }
+    MOCK_METHOD(_<StreamingResponse>, chatStreaming, (Params params, IOpenAIChat::Session messages), (override));
     MOCK_METHOD(AFuture<std::valarray<double>>, embedding, (Params params, AString input), (override));
 };
 
@@ -41,13 +38,13 @@ TEST(TakePhotoTest, MissingPhotoDescThrows) {
 
     // No calls expected — handler should throw before reaching any API
     EXPECT_CALL(*sd, txt2img(testing::_)).Times(0);
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
 
     auto tool = tools::takePhoto(std::move(sd), std::move(openAI));
 
     OpenAITools tools{};
     EXPECT_THROW(
-        await(tool.handler({
+        util::await_synchronously(tool.handler({
             .tools = tools,
             .args = AJson::Object{},  // empty args, no "photo_desc"
             .allToolCalls = {},
@@ -64,13 +61,13 @@ TEST(TakePhotoTest, PhotoDescNotStringThrows) {
     auto openAI = _new<OpenAIMock>();
 
     EXPECT_CALL(*sd, txt2img(testing::_)).Times(0);
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
 
     auto tool = tools::takePhoto(std::move(sd), std::move(openAI));
 
     OpenAITools tools{};
     EXPECT_THROW(
-        await(tool.handler({
+        util::await_synchronously(tool.handler({
             .tools = tools,
             .args = AJson::Object{{"photo_desc", 123}},
             .allToolCalls = {},

@@ -20,7 +20,7 @@ TEST(WebSearchIntegration, Basic) {
         results = co_await web::search("aui framework c++", 3);
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 
@@ -90,7 +90,7 @@ TEST(WebSearchIntegration, SearchAppAI) {
 
     ON_CALL(*app, openChat())
         .WillByDefault([&]() noexcept -> AString {
-            return AString(CHAT_HISTORY) + AString(fmt::format(config::INSTRUCTIONS_DM, "Alex2772"));
+            return AString(CHAT_HISTORY) + AString(fmt::format("You are in DM with {}", "Alex2772"));
         });
 
     ON_CALL(*app, telegramPostMessage(testing::_))
@@ -112,7 +112,7 @@ TEST(WebSearchIntegration, SearchAppAI) {
 
     async << app->passNotificationToAI("You received a notification. Use #openChat").onProcessed;
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }

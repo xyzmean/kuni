@@ -26,6 +26,7 @@
 #include "AUI/IO/AFileInputStream.h"
 #include "tools/ask.h"
 #include "util/cosine_similarity.h"
+#include "util/diary_save_entries.h"
 #include "util/important_things_to_remember.h"
 
 #include <range/v3/action/erase.hpp>
@@ -60,7 +61,7 @@ AFuture<std::valarray<double>> contextEmbedding(IOpenAIChat& openAI, ranges::ran
 AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
     .diaryDir = mInit.workingDir / "diary",
     .openAI = mInit.openAI,
-}), mWakeupTimer(_new<ATimer>(200min)) {
+}), mWakeupTimer(_new<ATimer>(27min)) {
     // mTools.addTool({
     //     .name = "send_telegram_message",
     //     .description = "Sends a message to a Telegram user.",
@@ -93,6 +94,7 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
 
             co_await self.onBeforeMainLoop();
             for (;;) {
+                self.onOffline();
                 if (self.mTemporaryContext.size() <= 1) {
                     // Alex2772 (Apr 19 2026):
                     // This approach is okay to revisit unfinished chats. However, if there are many unread chats,
@@ -122,17 +124,16 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                         // 2. reduce resource usage:
                         //    - less conversations would be made
                         //    - in case of group chats and telegram channels, messages would be processed in batches
-                        const auto minutes = std::uniform_int_distribution(15, 120)(re);
-                        ALogger::info(LOG_TAG) << "Going to sleep for " << minutes << " minutes";
-                        for (int i = 0; i < minutes; ++i) {
+                        const auto duration = std::chrono::minutes(std::uniform_int_distribution(15, 120)(re));
+                        ALogger::info(LOG_TAG) << "Going to sleep for " << std::chrono::duration_cast<std::chrono::minutes>(duration).count() << " minutes";
+                        self.mWakeup = false;
+                        for (int i = 0; i < std::chrono::duration_cast<std::chrono::seconds>(duration).count(); ++i) {
                             // костыль ну да сойдёт
-                            if (!self.mNotifications.empty()) {
-                                if (self.mNotifications.front().message.contains("{}"_format(config::PAPIK_CHAT_ID))) {
-                                    ALogger::info(LOG_TAG) << "Daddy woke me up";
-                                    break;
-                                }
+                            if (self.mWakeup) {
+                                ALogger::info(LOG_TAG) << "Early wake up";
+                                break;
                             }
-                            co_await AThread::asyncSleep(1min);
+                            co_await AThread::asyncSleep(1s);
                         }
                     }
                 }
@@ -148,6 +149,7 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                 }
                 auto notification = std::move(self.mNotifications.front());
                 self.mNotifications.pop_front();
+                self.mAskCalledThisTurn = false;
                 notification.message += "\nCurrent time: {} UTC"_format(std::chrono::system_clock::now());
                 notification.onStartedProcessing.supplyValue();
                 AUI_DEFER { notification.onProcessed.supplyValue(); };
@@ -222,6 +224,14 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
 
                     naxyi_preserve_ctx:
                     self.updateTools(notification.actions);
+                    if (!self.mAskCalledThisTurn) {
+                        // remind LLM to call #ask before responding.
+                        // Injected as a system-level checkpoint so LLM sees it right before generating its next action.
+                        self.mTemporaryContext.last().content +=
+                            "\n[system] Have you called #ask yet this turn? "
+                            "If the message involves personal topics, past events, questions, or people you know — "
+                            "call #ask BEFORE send_telegram_message.";
+                    }
                     auto escape = [&](OpenAITools::Ctx ctx) -> AFuture<AString> {
                         pauseFlag = true;
                         if (self.mActingProactively) {
@@ -247,11 +257,15 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                     });
                     IOpenAIChat::Response botAnswer = co_await [&]() -> AFuture<IOpenAIChat::Response> {
                         MetricsBreadcumbs::Point metric(self.metricBreadcumbs(), "function", "notification processing loop");
-                        auto response = co_await self.openAI()->chat( {
+                        auto response = self.openAI()->chatStreaming( {
                             .systemPrompt = getSystemPrompt(),
                             .tools = notification.actions.asJson(),
                         }, self.mTemporaryContext);
-                        co_return response;
+                        connect(response->response.changed, self, [&self](IOpenAIChat::Response response) {
+                            self.onResponseAssembling(std::move(response));
+                        });
+                        co_await response->completed;
+                        co_return std::move(*response->response);
                     }();
                     AUI_ASSERT(AThread::current() == self.getThread());
 
@@ -280,7 +294,8 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                                 self.mTemporaryContext << IOpenAIChat::Message{
                                     .role = IOpenAIChat::Message::Role::USER,
                                     .content = "Nice thoughts! However you should be tool-centric. Make sure you "
-                                    "made tool calls. The message you provided is not visible to anyone but you.",
+                                    "made tool calls. The message you provided is not visible to anyone but you. Call "
+                                    "#wait if you are unsure.",
                                 };
                                 goto naxyi_preserve_ctx;
                             }
@@ -289,7 +304,8 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                         self.mTemporaryContext << IOpenAIChat::Message{
                             .role = IOpenAIChat::Message::Role::USER,
                             .content = "Nice thoughts! However you should be tool-centric. Make sure you "
-                            "made tool calls. The message you provided is not visible to anyone but you.",
+                            "made tool calls. The message you provided is not visible to anyone but you. Call #wait if "
+                            "you are unsure.",
                         };
                         goto naxyi_preserve_ctx;
                     }
@@ -334,6 +350,14 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                         self.mTemporaryContext.last().content += "\nWhat's your next action? Use a `tool` to act. Use #ask to consult with your knowledge database. The following tools available: " + AStringVector(notification.actions.handlers().keyVector()).join(", ");
                     }
                     if (ranges::any_of(botAnswer.choices.at(0).message.tool_calls, [](const IOpenAIChat::Message::ToolCall& t){ return t.function.name == "send_telegram_message"; })) {
+                        // if LLM sent a message without ever calling #ask this turn,
+                        // inject a reminder into the next turn's context.
+                        if (!self.mAskCalledThisTurn) {
+                            self.mTemporaryContext.last().content +=
+                                "\n[system] Note: you sent a message without consulting #ask this turn. "
+                                "Next time, call #ask before send_telegram_message to enrich your response "
+                                "with memories and context.";
+                        }
                         goto naxyi_preserve_ctx;
                     } else {
                         goto naxyi_populate_ctx;
@@ -377,57 +401,10 @@ AFuture<> AppBase::diaryDumpMessages() {
     }
     auto importantThingsToRemember = util::importantThingsToRemember(*openAI(), mTemporaryContext, previousWorkingMemory);
 
-    mTemporaryContext << IOpenAIChat::Message{
-        .role = IOpenAIChat::Message::Role::USER,
-        .content = config::DIARY_PROMPT,
-    };
-
-    IOpenAIChat::Params chatParams{
+    co_await util::diarySaveEntries(mDiary, mTemporaryContext, {
         .systemPrompt = getSystemPrompt(),
-        // chatParams.tools = mTools.asJson; // no tools should be involved.
-    };
-    naxyi:
-    IOpenAIChat::Response botAnswer = co_await openAI()->chat(chatParams, mTemporaryContext);
-    if (botAnswer.choices.at(0).message.content.empty()) {
-        goto naxyi;
-    }
-    mTemporaryContext << botAnswer.choices.at(0).message;
-    auto id = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    auto message = botAnswer.choices.at(0).message.content;
-
-    // stupid AI sometimes messes up with separators
-    message.replaceAll("- --", "---");
-    message.replaceAll("-- -", "---");
-    auto split = message.split("---");
-
-    if (ranges::any_of(split, [](const auto& s) { return s.length() > 3000; })) {
-        mTemporaryContext << IOpenAIChat::Message {
-            .role = IOpenAIChat::Message::Role::USER,
-            .content = "One of your sections are too big. Shorten then and ensure correct division by \"---\".",
-        };
-    }
-
-    for (const auto& take : split) {
-        if (take.length() < 20) {
-            continue; // random shit
-        }
-        auto embedding = co_await openAI()->embedding({ .config = config::ENDPOINT_EMBEDDING }, take);
-        if (auto query = co_await mDiary.query(embedding, {.confidenceFactor = 0}); !query.empty()) {
-            ALogger::info("AppBase") << "{}.md"_format(id) << ": plagiarism factor other_id=\"" << query.first().entry->id << "\" relatedness =" << float(query.first().relatedness);
-            if (query.first().relatedness > config::DIARY_PLAGIARISM_THRESHOLD) {
-                ALogger::info("AppBase") << "{}.md"_format(id) << ": won't store because it's plagiarism other_id=\"" << query.first().entry->id << "\"";
-                continue;
-            }
-        }
-
-        mDiary.save({
-            .id = "{}"_format(id++),
-            .metadata = {
-                .embedding = std::move(embedding),
-            },
-            .freeformBody = std::move(take),
-        });
-    }
+        // no tools should be involved.
+    });
     {
         // do it in separate lines: first, we wait for LLM response, second, we overwrite file (destructive operation).
         auto workingMemoryMd = co_await importantThingsToRemember;
@@ -477,7 +454,24 @@ AFuture<AString> AppBase::onCleanContext() {
     if ((mInit.workingDir / WORKING_MEMORY_PATH).isRegularFileExists()) {
         AByteBuffer workingMemory;
         workingMemory << AFileInputStream(mInit.workingDir / WORKING_MEMORY_PATH);
-        co_return "<things_to_remember>\n{}\n</things_to_remember>\n"_format(AStringView(workingMemory.data(), workingMemory.size()));
+        co_return R"(<things_to_remember>
+{}
+</things_to_remember>
+<instructions>
+Your behaviour must be highly influenced by "physical state" and "emotional state" mentioned above.
+
+<example>
+Emotional state: anger
+...
+send_telegram_message("text":"иди нахуй заебал")
+</example>
+<example>
+Emotional state: amused
+...
+send_telegram_message("text":"мррр~")
+</example>
+</instruction>
+)"_format(AStringView(workingMemory.data(), workingMemory.size()));
     }
     co_return "";
 }
@@ -485,13 +479,16 @@ AFuture<AString> AppBase::onCleanContext() {
 
 void AppBase::updateTools(OpenAITools& actions) {
     ALOG_TRACE(LOG_TAG) << "updateTools";
-    actions.insert(tools::ask(mTemporaryContext, openAI(), mDiary));
+    actions.insert(tools::ask([this] { return mTemporaryContext.empty() ? AString{} : mTemporaryContext.last().content; }, openAI(), mDiary));
     actions.onAfterToolCall = [this](const AString& toolName) {
         if (toolName == "wait") {
             return;
         }
         if (toolName == "pause") {
             return;
+        }
+        if (toolName == "ask") {
+            mAskCalledThisTurn = true;
         }
         auto labels = metricBreadcumbs()->value();
         emit toolCallFired(AppBase::ToolCallEvent{

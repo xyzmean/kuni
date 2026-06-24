@@ -11,6 +11,7 @@
 #include "AUI/Util/kAUI.h"
 #include "tools/stickers.h"
 #include "util/is_accessible_from_lockdown.h"
+#include "util/time_ago.h"
 
 #include <range/v3/algorithm/max_element.hpp>
 
@@ -20,7 +21,7 @@ static AFuture<AString> extractSenderName(ITelegramClient& telegram, int64_t sen
         senderName = "You (Kuni)";
     } else if (senderId != 0) {
         try {
-            auto sender = co_await telegram.sendQueryWithResult(ITelegramClient::toPtr(td::td_api::getUser(senderId)));
+            auto sender = co_await telegram.getUser(senderId);
             senderName = sender->td::td_api::user::first_name_ + " " + sender->td::td_api::user::last_name_;
             if (sender->td::td_api::user::usernames_) {
                 if (!sender->td::td_api::user::usernames_->active_usernames_.empty()) {
@@ -31,7 +32,7 @@ static AFuture<AString> extractSenderName(ITelegramClient& telegram, int64_t sen
         }
         if (senderName.empty()) {
             try {
-                auto sender = co_await telegram.sendQueryWithResult(ITelegramClient::toPtr(td::td_api::getChat(senderId)));
+                auto sender = co_await telegram.getChat(senderId);
                 senderName = sender->td::td_api::chat::title_;
             } catch (const AException&) {
             }
@@ -93,8 +94,15 @@ llmui::formatChatSingle(ITelegramClient& telegram, AString& result, td::td_api::
             preview = preview.utf8().substr(0, 30).str + "..." + preview.utf8().substr(preview.utf8().length() - 30).str;
         }
     }
-    result += "<chat chat_id=\"{}\" title=\"{}\" preview=\"{}\" type=\"{}\""_format(
-        chat.id_, chat.title_, preview, type);
+    AString lastMessageAgo;
+    if (chat.last_message_) {
+        auto tp = std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds>(
+            std::chrono::seconds(chat.last_message_->date_));
+        lastMessageAgo = util::timeAgo(tp);
+    }
+
+    result += "<chat chat_id=\"{}\" title=\"{}\" preview=\"{}\" type=\"{}\" last_message=\"{}\""_format(
+        chat.id_, chat.title_, preview, type, lastMessageAgo);
     if (chat.unread_count_ > 0) {
         result += " unread_count=\"{}\""_format(chat.unread_count_);
     }
@@ -102,7 +110,7 @@ llmui::formatChatSingle(ITelegramClient& telegram, AString& result, td::td_api::
 }
 
 AFuture<>
-llmui::formatChatList(ITelegramClient& telegram, AString& result, std::span<td::td_api::object_ptr<td::td_api::chat>> chats) {
+llmui::formatChatList(ITelegramClient& telegram, AString& result, std::span<_<td::td_api::chat>> chats) {
     for (auto& chat : chats) {
         co_await formatChatSingle(telegram, result, *chat);
     }
@@ -117,7 +125,7 @@ AString llmui::extractMessageTypeAndText(td::td_api::message& msg) {
               checkForMaliciousPayloads(text.text_->text_);
               out += text.text_->text_;
               if (text.link_preview_) {
-                  out += "\n\n" + to_string(text.link_preview_) + "\n";
+                  out += "\n" + formatLinkPreview(*text.link_preview_);
               }
           },
           [&](td::td_api::messagePhoto& photo) {
@@ -348,6 +356,14 @@ AFuture<AString> llmui::formatChatHistoryMessage(
           [&](td::td_api::messageSenderUser& user) { senderId = user.user_id_; },
           [&](td::td_api::messageSenderChat& chat) { senderId = chat.chat_id_; },
         });
+
+    if (!msg.sender_tag_.empty()) {
+        formattedXmlTag += " chat_tag=\"{}\""_format(msg.sender_tag_);
+    }
+    if (!msg.author_signature_.empty()) {
+        formattedXmlTag += " author_signature=\"{}\""_format(msg.author_signature_);
+    }
+
     if (senderId != telegram.myId() && chat.last_read_inbox_message_id_ <= msg.id_) {
         formattedXmlTag += " unread";
     }
@@ -446,10 +462,17 @@ AFuture<AString> llmui::formatChatHistoryMessage(
     auto result = "<{}>\n"_format(formattedXmlTag);
     if (xmlTag != "reply_to") {
         if (msg.reply_to_ && msg.reply_to_->get_id() == td::td_api::messageReplyToMessage::ID) {
-            auto reply = td::td_api::move_object_as<td::td_api::messageReplyToMessage>(std::move(msg.reply_to_));
-            auto replyToMsg = co_await telegram.sendQueryWithResult(
-                ITelegramClient::toPtr(td::td_api::getMessage(msg.chat_id_, reply->message_id_)));
-            result += co_await llmui::formatChatHistoryMessage(telegram, *replyToMsg, chat, openAI, temporaryContext, "reply_to");
+            try {
+                auto reply = td::td_api::move_object_as<td::td_api::messageReplyToMessage>(std::move(msg.reply_to_));
+                auto replyToMsg = co_await telegram.getMessage(msg.chat_id_, reply->message_id_);
+                result += co_await llmui::formatChatHistoryMessage(telegram, *replyToMsg, chat, openAI, temporaryContext, "reply_to");
+            } catch (const AException& e) {
+                if (e.getMessage().contains("Not Found")) {
+                    result += "<reply_to>Deleted Message</reply_to>";
+                } else {
+                    ALogger::err("formatChatHistoryMessage") << e;
+                }
+            }
         }
 
         if (msg.content_->get_id() == td::td_api::messagePhoto::ID) {
@@ -523,4 +546,27 @@ AFuture<AString> llmui::formatChatHistoryMessage(
 
     result += "\n</{}>\n"_format(formattedXmlTag);
     co_return result;
+}
+
+AString llmui::formatLinkPreview(const td::td_api::linkPreview& preview) {
+    AString out = "<link_preview";
+    if (!preview.url_.empty()) {
+        out += " url=\"{}\""_format(preview.url_);
+    }
+    if (!preview.site_name_.empty()) {
+        out += " site=\"{}\""_format(preview.site_name_);
+    }
+    if (!preview.title_.empty()) {
+        out += " title=\"{}\""_format(preview.title_);
+    }
+    if (!preview.author_.empty()) {
+        out += " author=\"{}\""_format(preview.author_);
+    }
+    if (preview.description_ && !preview.description_->text_.empty()) {
+        out += ">\n{}\n</link_preview>"_format(preview.description_->text_);
+    } else {
+        out += " />";
+    }
+    out += "\n";
+    return out;
 }

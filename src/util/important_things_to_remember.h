@@ -7,7 +7,7 @@
 #include <OpenAIChatImpl.h>
 
 namespace util {
-AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, AVector<IOpenAIChat::Message> context, AStringView previousWorkingMemory) {
+AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, IOpenAIChat::Session context, AStringView previousWorkingMemory) {
     using namespace std::chrono_literals;
 
     AString prompt = "What are important things in timespan {} (3 days) you should remember?\n"_format(formatPastHours(24h * 3));
@@ -53,6 +53,7 @@ AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, AVector<IOpenAIC
         .role = IOpenAIChat::Message::Role::USER,
         .content = std::move(prompt),
     };
+    bool shitCheckTriggered = false;
     for (;;) {
         auto content = (co_await openAI.chat({
             .systemPrompt = AppBase::getSystemPrompt(),
@@ -60,6 +61,22 @@ AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, AVector<IOpenAIC
         }, context)).choices.at(0).message.content;
         if (content.contains("tool_calls") || content.contains("ask")) {
             // deepseek bug - attempts to use DSML to make a tool call.
+            if (!shitCheckTriggered) {
+                shitCheckTriggered = true;
+                continue;
+            }
+        }
+        content.removeAll("<things_to_remember>");  // sometimes llm wraps with xml tags by itself, we don't need
+        content.removeAll("</things_to_remember>"); // that
+        static constexpr auto notAWhitespace = [](char c) {
+            if (c == '\n') {
+                return false;
+            }
+            return !std::isspace(c);
+        };
+        content.erase(content.begin(), ranges::find_if(content, notAWhitespace));
+        if (content.empty()) {
+            // sometimes llm returns blank response - try again
             continue;
         }
         co_return content;

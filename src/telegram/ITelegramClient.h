@@ -40,6 +40,21 @@ struct ITelegramClient {
         co_return td::move_tl_object_as<typename F::ReturnType::element_type>(std::move(object));
     }
 
+    template<typename TgObject>
+    struct Cached {
+        TgObject tg;
+        AFuture<> populated;
+    };
+
+    [[nodiscard]]
+    AFuture<_<td::td_api::chat>> getChat(int64_t id);
+
+    [[nodiscard]]
+    AFuture<_<td::td_api::user>> getUser(int64_t id);
+
+    [[nodiscard]]
+    AFuture<_<td::td_api::message>> getMessage(int64_t chatId, int64_t messageId);
+
     [[nodiscard]]
     virtual const AFuture<>& waitForConnection() const noexcept = 0;
 
@@ -62,4 +77,12 @@ struct ITelegramClient {
     } connectionState = ConnectionState::INITIALIZING;
 
     emits<> loggedIn;
+
+
+protected:
+    template<typename TgObject>
+    using Cache = AMap<int64_t /* id */, _<Cached<TgObject>>>;
+    Cache<td::td_api::chat> mChatCache;
+    Cache<td::td_api::user> mUserCache;
+    AMap<int64_t /* chatId */, Cache<td::td_api::message>> mMessageCache;
 };

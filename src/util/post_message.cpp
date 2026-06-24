@@ -10,19 +10,18 @@
 
 static constexpr auto LOG_TAG = "util::post_message";
 
-AFuture<> util::telegramPostMessage(
+AFuture<td::td_api::object_ptr<td::td_api::message>> util::telegramPostMessage(
     ITelegramClient& telegram, int64_t chatId, AString text, AOptional<_<AImage>> photo, AOptional<APath> audioPath, int64_t replyTo) {
     ALOG_TRACE(LOG_TAG)
         << "telegramPostMessage: chat_id" << chatId << " text=" << text << " photo=" << photo
         << " audioPath=" << audioPath << " replyTo=" << replyTo;
     // Check lockdown mode - only allow PAPIK_CHAT_ID if lockdown is enabled
     if (! co_await util::isAccessibleFromLockdown(telegram, chatId)) {
-        ALogger::err(LOG_TAG) << "Lockdown mode is enabled. You can only send messages to chat with ID {} (PAPIK_CHAT_ID)."_format(
-            config::PAPIK_CHAT_ID);
-        co_return;
+        throw AException("Lockdown mode is enabled. You can only send messages to chat with ID {} (PAPIK_CHAT_ID)."_format(
+            config::PAPIK_CHAT_ID));
     }
 
-    co_await telegram.sendQueryWithResult([&] {
+    co_return co_await telegram.sendQueryWithResult([&] {
         auto msg = td::td_api::make_object<td::td_api::sendMessage>();
         msg->chat_id_ = chatId;
         msg->input_message_content_ = [&]() -> td::td_api::object_ptr<td::td_api::InputMessageContent> {
@@ -35,8 +34,9 @@ AFuture<> util::telegramPostMessage(
                 }();
                 content->width_ = photo->get()->width();
                 content->height_ = photo->get()->height();
-                JpgImageLoader::save(AFileOutputStream("temp.jpg"), **photo);
-                content->photo_ = ITelegramClient::toPtr(td::td_api::inputFileLocal("temp.jpg"));
+                auto tempPath = "temp_{}.jpg"_format(std::chrono::system_clock::now().time_since_epoch().count());
+                JpgImageLoader::save(AFileOutputStream(tempPath), **photo);
+                content->photo_ = ITelegramClient::toPtr(td::td_api::inputFileLocal(tempPath));
                 return content;
             }
 

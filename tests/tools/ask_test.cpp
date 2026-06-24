@@ -9,6 +9,7 @@
 #include "OpenAITools.h"
 #include "AUI/Thread/AAsyncHolder.h"
 #include "AUI/Thread/AEventLoop.h"
+#include "util/await_synchronously.h"
 
 #include <gmock/gmock.h>
 
@@ -20,11 +21,7 @@ namespace {
 // ---------------------------------------------------------------------------
 class OpenAIMock : public IOpenAIChat {
 public:
-    MOCK_METHOD(AFuture<Response>, chat, (Params params, AVector<Message> messages), (override));
-
-    ::_<StreamingResponse> chatStreaming(Params params, AVector<Message> messages) override {
-        return nullptr;
-    }
+    MOCK_METHOD((AArc<StreamingResponse>), chatStreaming, (Params params, IOpenAIChat::Session messages), (override));
     MOCK_METHOD(AFuture<std::valarray<double>>, embedding, (Params params, AString input), (override));
 };
 
@@ -47,9 +44,19 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Helper: wrap a Response into a StreamingResponse
+// ---------------------------------------------------------------------------
+static AArc<IOpenAIChat::StreamingResponse> makeStreamingResponse(IOpenAIChat::Response resp) {
+    auto result = _new<IOpenAIChat::StreamingResponse>();
+    result->response.raw = std::move(resp);
+    result->completed.supplyValue();
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: build a Response with a single tool_call to #query
 // ---------------------------------------------------------------------------
-static IOpenAIChat::Response makeQueryToolCallResponse(const AString& text, const AString& callId = "call_1") {
+static AArc<IOpenAIChat::StreamingResponse> makeQueryToolCallResponse(const AString& text, const AString& callId = "call_1") {
     IOpenAIChat::Message msg;
     msg.role = IOpenAIChat::Message::Role::ASSISTANT;
     msg.content = "";
@@ -73,13 +80,13 @@ static IOpenAIChat::Response makeQueryToolCallResponse(const AString& text, cons
             .finish_reason = "tool_calls",
         },
     };
-    return resp;
+    return makeStreamingResponse(std::move(resp));
 }
 
 // ---------------------------------------------------------------------------
 // Helper: build a final (no tool_call) Response
 // ---------------------------------------------------------------------------
-static IOpenAIChat::Response makeFinalResponse(const AString& content) {
+static AArc<IOpenAIChat::StreamingResponse> makeFinalResponse(const AString& content) {
     IOpenAIChat::Message msg;
     msg.role = IOpenAIChat::Message::Role::ASSISTANT;
     msg.content = content;
@@ -92,7 +99,7 @@ static IOpenAIChat::Response makeFinalResponse(const AString& content) {
             .finish_reason = "stop",
         },
     };
-    return resp;
+    return makeStreamingResponse(std::move(resp));
 }
 
 // ---------------------------------------------------------------------------
@@ -110,15 +117,14 @@ static std::valarray<double> dummyEmbedding() {
 TEST(AskTest, HandlerShortQueryError) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
     EXPECT_CALL(*openAI, embedding(testing::_, testing::_)).Times(0);
 
     OpenAITools tools{};
 
-    auto result = await(tool.handler({
+    auto result = util::await_synchronously(tool.handler({
         .tools = tools,
         .args = AJson::Object{{"query", "short"}},
         .allToolCalls = {},
@@ -134,15 +140,14 @@ TEST(AskTest, HandlerShortQueryError) {
 TEST(AskTest, HandlerMissingQueryThrows) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_)).Times(0);
 
     OpenAITools tools{};
 
     EXPECT_THROW(
-        await(tool.handler({
+        util::await_synchronously(tool.handler({
             .tools = tools,
             .args = AJson::Object{},
             .allToolCalls = {},
@@ -157,8 +162,7 @@ TEST(AskTest, HandlerMissingQueryThrows) {
 TEST(AskTest, HandlerSuccessWithToolCall) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
     const AString kFinalAnswer = "Alex writes ambient electronic music.";
     const AString kDiaryEntryBody = "Alex listens to ambient electronic music and writes his own tracks.";
@@ -183,13 +187,13 @@ TEST(AskTest, HandlerSuccessWithToolCall) {
         .WillOnce(Return(AFuture<AVector<Diary::EntryExAndRelatedness>>(AVector<Diary::EntryExAndRelatedness>{hit})));
 
     // LLM: first call returns #query tool call, second returns final answer
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeQueryToolCallResponse("What music does Alex write?"))))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeFinalResponse(kFinalAnswer))));
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
+        .WillOnce(Return(makeQueryToolCallResponse("What music does Alex write?")))
+        .WillOnce(Return(makeFinalResponse(kFinalAnswer)));
 
     OpenAITools tools{};
 
-    auto result = await(tool.handler({
+    auto result = util::await_synchronously(tool.handler({
         .tools = tools,
         .args = AJson::Object{{"query", "What kind of music does Alex write?"}},
         .allToolCalls = {},
@@ -205,8 +209,7 @@ TEST(AskTest, HandlerSuccessWithToolCall) {
 TEST(AskTest, HandlerLLMForcedToCallTool) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
     const AString kFinalAnswer = "Here is what I found.";
 
@@ -221,14 +224,14 @@ TEST(AskTest, HandlerLLMForcedToCallTool) {
     // 1st call: no tool_calls (LLM skips step) → gets "you must perform at least one call" message
     // 2nd call: makes the #query tool call
     // 3rd call: returns final answer
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeFinalResponse("I think I know the answer already."))))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeQueryToolCallResponse("Alex music habits"))))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeFinalResponse(kFinalAnswer))));
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
+        .WillOnce(Return(makeFinalResponse("I think I know the answer already.")))
+        .WillOnce(Return(makeQueryToolCallResponse("Alex music habits")))
+        .WillOnce(Return(makeFinalResponse(kFinalAnswer)));
 
     OpenAITools tools{};
 
-    auto result = await(tool.handler({
+    auto result = util::await_synchronously(tool.handler({
         .tools = tools,
         .args = AJson::Object{{"query", "Tell me about Alex's music habits in detail."}},
         .allToolCalls = {},
@@ -244,12 +247,9 @@ TEST(AskTest, HandlerWithTemporaryContextEnrichesQuery) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
 
-    IOpenAIChat::Message ctxMsg;
-    ctxMsg.role = IOpenAIChat::Message::Role::ASSISTANT;
-    ctxMsg.content = "User said they are learning guitar.";
-    AVector<IOpenAIChat::Message> temporaryContext = { std::move(ctxMsg) };
+    AString ctxContent = "User said they are learning guitar.";
 
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([&ctxContent] { return ctxContent; }, openAI, diary);
 
     const AString kFinalAnswer = "Found guitar-related diary entries.";
 
@@ -261,8 +261,8 @@ TEST(AskTest, HandlerWithTemporaryContextEnrichesQuery) {
 
     // Capture the messages passed to chat to verify query enrichment
     AString capturedUserContent;
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
-        .WillOnce([&](IOpenAIChat::Params, AVector<IOpenAIChat::Message> messages) {
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
+        .WillOnce([&](IOpenAIChat::Params, IOpenAIChat::Session messages) {
             // First USER message should contain the enriched query with temporaryContext
             for (const auto& m : messages) {
                 if (m.role == IOpenAIChat::Message::Role::USER) {
@@ -270,13 +270,13 @@ TEST(AskTest, HandlerWithTemporaryContextEnrichesQuery) {
                     break;
                 }
             }
-            return AFuture<IOpenAIChat::Response>(makeQueryToolCallResponse("guitar habits"));
+            return makeQueryToolCallResponse("guitar habits");
         })
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeFinalResponse(kFinalAnswer))));
+        .WillOnce(Return(makeFinalResponse(kFinalAnswer)));
 
     OpenAITools tools{};
 
-    auto result = await(tool.handler({
+    auto result = util::await_synchronously(tool.handler({
         .tools = tools,
         .args = AJson::Object{{"query", "Does Alex play any musical instruments?"}},
         .allToolCalls = {},
@@ -294,8 +294,7 @@ TEST(AskTest, HandlerWithTemporaryContextEnrichesQuery) {
 TEST(AskTest, HandlerDiaryReturnsNoEntries) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
     const AString kFinalAnswer = "I could not find relevant information.";
 
@@ -306,13 +305,13 @@ TEST(AskTest, HandlerDiaryReturnsNoEntries) {
     EXPECT_CALL(diary, query(testing::_, testing::_))
         .WillOnce(Return(AFuture<AVector<Diary::EntryExAndRelatedness>>(AVector<Diary::EntryExAndRelatedness>{})));
 
-    EXPECT_CALL(*openAI, chat(testing::_, testing::_))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeQueryToolCallResponse("user hobbies"))))
-        .WillOnce(Return(AFuture<IOpenAIChat::Response>(makeFinalResponse(kFinalAnswer))));
+    EXPECT_CALL(*openAI, chatStreaming(testing::_, testing::_))
+        .WillOnce(Return(makeQueryToolCallResponse("user hobbies")))
+        .WillOnce(Return(makeFinalResponse(kFinalAnswer)));
 
     OpenAITools tools{};
 
-    auto result = await(tool.handler({
+    auto result = util::await_synchronously(tool.handler({
         .tools = tools,
         .args = AJson::Object{{"query", "What are the user's hobbies and interests?"}},
         .allToolCalls = {},
@@ -327,8 +326,7 @@ TEST(AskTest, HandlerDiaryReturnsNoEntries) {
 TEST(AskTest, ToolMetadata) {
     auto openAI = _new<OpenAIMock>();
     DiaryMock diary;
-    AVector<IOpenAIChat::Message> temporaryContext;
-    auto tool = tools::ask(temporaryContext, openAI, diary);
+    auto tool = tools::ask([] { return AString{}; }, openAI, diary);
 
     EXPECT_EQ(tool.name, "ask");
     EXPECT_FALSE(tool.description.empty());

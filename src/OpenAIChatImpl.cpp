@@ -21,39 +21,14 @@
 #include "config.h"
 #include "AUI/IO/AByteBufferInputStream.h"
 #include "AUI/Util/ATokenizer.h"
+#include "util/openai_streaming.h"
+#include "util/tui_streaming.h"
 
 static constexpr auto LOG_TAG = "OpenAIChat";
 
 using namespace std::chrono_literals;
 
 
-struct StreamingResponse {
-    AString id;
-    AString object;
-    AString model;
-    AString system_fingerprint;
-    int64_t created;
-    struct Choice {
-        int index{};
-        IOpenAIChat::Message delta;
-    };
-    AVector<Choice> choices;
-};
-
-AJSON_FIELDS(StreamingResponse,
-    AJSON_FIELDS_ENTRY(id)
-    AJSON_FIELDS_ENTRY(object)
-    AJSON_FIELDS_ENTRY(model)
-    AJSON_FIELDS_ENTRY(system_fingerprint)
-    AJSON_FIELDS_ENTRY(choices)
-    AJSON_FIELDS_ENTRY(created)
-    )
-
-
-AJSON_FIELDS(StreamingResponse::Choice,
-    AJSON_FIELDS_ENTRY(index)
-    AJSON_FIELDS_ENTRY(delta)
-    )
 
 AString IOpenAIChat::embedImage(AImageView image) {
     ALOG_TRACE(LOG_TAG) << "embedImage";
@@ -65,8 +40,9 @@ AString IOpenAIChat::embedImage(AImageView image) {
 }
 
 
-AJson OpenAIChatImpl::makeQueryString(Params params, AVector<IOpenAIChat::Message> messages) {
+AJson OpenAIChatImpl::makeQueryString(Params params, const IOpenAIChat::Session& messages) {
     ALOG_TRACE(LOG_TAG) << "makeQueryString";
+    AUI_ASSERT(!messages.sessionId.empty());
     AJson json {
         {
           "messages",
@@ -78,6 +54,7 @@ AJson OpenAIChatImpl::makeQueryString(Params params, AVector<IOpenAIChat::Messag
         { "include_sources", true },
         { "model", params.config.model },
         { "tools", params.tools },
+        { "session_id", messages.sessionId },
     };
 
     if (config::TEMPERATURE) {
@@ -104,28 +81,22 @@ AJson OpenAIChatImpl::makeQueryString(Params params, AVector<IOpenAIChat::Messag
     return json;
 }
 
-AFuture<IOpenAIChat::Response> OpenAIChatImpl::chat(Params params, AVector<Message> messages) {
-    messages.insert(messages.begin(), {Message::Role::SYSTEM_PROMPT, params.systemPrompt});
-    AString query = AJson::toString(makeQueryString(params, messages));
-    AFileOutputStream("last_query.json") << query.toStdString();
-    const auto logsDir = APath("logs");
-    logsDir.makeDirs();
-    auto now = std::chrono::system_clock::now();
-    AFileOutputStream(logsDir / "{}.0query.json"_format(now)) << query.toStdString();
-
+AFuture<AJson> OpenAIChatImpl::makeHttpRequest(Endpoint endpoint, std::string query, std::string_view sessionId) {
     ALOG_TRACE(LOG_TAG) << "Query: " << query;
-    AVector<AString> headers = {"Content-Type: application/json"};
-    if (!params.config.endpoint.bearerKey.empty()) {
-        headers << "Authorization: Bearer {}"_format(params.config.endpoint.bearerKey);
+    AVector<AString> headers = {"Content-Type: application/json", "x-session-id: {}"_format(sessionId) };
+    if (!endpoint.bearerKey.empty()) {
+        headers << "Authorization: Bearer {}"_format(endpoint.bearerKey);
     }
+
     tryAgain:
-    auto response = AJson::fromBuffer((co_await ACurl::Builder(params.config.endpoint.baseUrl + "chat/completions")
+    auto response = AJson::fromBuffer((co_await ACurl::Builder(endpoint.baseUrl + "chat/completions")
                                            .withMethod(ACurl::Method::HTTP_POST)
                                            .withTimeout(config::REQUEST_TIMEOUT)
                                            .withHeaders(headers)
-                                           .withBody(query.toStdString())
+                                           .withBody(query)
                                            .runAsync())
                                           .body);
+
     if (response.contains("error")) {
         auto message = AJson::toString(response["error"]);
         if (message.contains("model failed to load, this may be due to resource limitations or an internal error")) {
@@ -138,16 +109,11 @@ AFuture<IOpenAIChat::Response> OpenAIChatImpl::chat(Params params, AVector<Messa
         }
         throw AException("Ollama error: " + message);
     }
-    AFileOutputStream("last_response.json") << response;
-    AFileOutputStream(logsDir / "{}.1response.json"_format(now)) << response;
-    ALOG_DEBUG(LOG_TAG) << "Response: " << AJson::toString(response).replaceAll("\\n", "\n");
-    auto responseResult = aui::from_json<Response>(response);
-    // if (!responseResult.choices.empty() && !ALogger::global().isTrace()) {
-    //     ALOG_DEBUG(LOG_TAG) << "Response reasoning: " << responseResult.choices.at(0).message.reasoning_content << responseResult.choices.at(0).message.reasoning;
-    // }
-    co_return responseResult;
+    co_return response;
 }
-_<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, AVector<Message> messages) {
+
+
+_<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, IOpenAIChat::Session messages) {
     messages.insert(messages.begin(), {Message::Role::SYSTEM_PROMPT, params.systemPrompt});
     AString query = [&] {
         auto json = makeQueryString(params, messages);
@@ -155,35 +121,37 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, A
         return AJson::toString(json);
     }();
     AFileOutputStream("last_query.json") << query.toStdString();
-    const auto logsDir = APath("logs");
+    static const auto logsDir = APath("logs");
     logsDir.makeDirs();
-    auto now = std::chrono::system_clock::now();
+    const auto now = std::chrono::system_clock::now();
     AFileOutputStream(logsDir / "{}.0query.json"_format(now)) << query.toStdString();
 
     ALOG_TRACE(LOG_TAG) << "QueryStreaming: " << query;
-    AVector<AString> headers = {"Content-Type: application/json"};
-    if (!params.config.endpoint.bearerKey.empty()) {
-        headers << "Authorization: Bearer {}"_format(params.config.endpoint.bearerKey);
-    }
     auto result = _new<IOpenAIChat::StreamingResponse>();
 
-    result->completed = [&]() -> AFuture<> {
+    // Subscribe to response changes and print incrementally to the TUI.
+    auto printer = std::make_shared<TuiStreamingPrinter>();
+    AObject::connect(result->response.changed, AObject::GENERIC_OBSERVER,
+                     [printer, weak = result.weak()] {
+                         if (auto s = weak.lock()) {
+                             printer->update(*s->response);
+                         }
+                     });
+
+    result->completed =
+        [](AString query, _<StreamingResponse> result, Params params, _<TuiStreamingPrinter> printer, std::chrono::system_clock::time_point now, AString sessionId)
+        -> AFuture<> {
         const auto caller = AThread::current();
         auto processJson = [=](AJson json) {
             caller->enqueue([=, json = std::move(json)] {
-                auto response = aui::from_json<::StreamingResponse>(json);
+                auto chunk = aui::from_json<util::openai_streaming::StreamingChunk>(json);
                 auto out = result->response.writeScope();
-                out->id = response.id;
-                out->created = response.created;
-                out->model = response.model;
-                out->system_fingerprint = response.system_fingerprint;
-                for (auto& choice: response.choices) {
-                    choice.delta.role = Message::Role::ASSISTANT;
-                    while (out->choices.size() <= choice.index) {
-                        out->choices.emplace_back().index = out->choices.size();
-                    }
-                    out->choices.at(choice.index).message += choice.delta;
-                }
+                out->id = chunk.id;
+                out->created = chunk.created;
+                out->model = chunk.model;
+                out->system_fingerprint = chunk.system_fingerprint;
+                out->usage = chunk.usage;
+                chunk.collectTo(out->choices);
             });
         };
 
@@ -192,28 +160,39 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, A
             while (!jsonTempBuffer.empty()) {
                 ATokenizer tokenizer(std::make_unique<AByteBufferInputStream>(jsonTempBuffer));
                 AString command = tokenizer.readStringWhile([](char c) {
-                    return c != '{';
+                    return c != '{' && c != '\n';
                 });
                 if (command.startsWith("data: [DONE]")) {
                     break;
                 }
+                AUI_DEFER {
+                    const auto end = AStringView(jsonTempBuffer.data(), jsonTempBuffer.size()).find("\n\n");
+                    const auto at = end == std::string::npos ? jsonTempBuffer.end() : jsonTempBuffer.begin() + end + 2;
+                    jsonTempBuffer.erase(jsonTempBuffer.begin(), at);
+                };
+
                 if (!command.startsWith("data:")) {
-                    break;
+                    continue;
                 }
+
                 auto json = AJson::fromBuffer(jsonTempBuffer.slice(command.bytes().length()));
                 processJson(std::move(json));
-                const auto end = AStringView(jsonTempBuffer.data(), jsonTempBuffer.size()).find("\n\n");
-                const auto at = end == std::string::npos ? jsonTempBuffer.end() : jsonTempBuffer.begin() + end + 2;
-                jsonTempBuffer.erase(jsonTempBuffer.begin(), at);
+
             }
         };
-        co_await ACurl::Builder(params.config.endpoint.baseUrl + "chat/completions")
+
+        AUI_ASSERT(!sessionId.empty());
+        AVector<AString> headers = {"Content-Type: application/json", "x-session-id: {}"_format(sessionId) };
+        if (!params.config.endpoint.bearerKey.empty()) {
+            headers << "Authorization: Bearer {}"_format(params.config.endpoint.bearerKey);
+        }
+        auto httpResponse = co_await ACurl::Builder(params.config.endpoint.baseUrl + "chat/completions")
                                                .withMethod(ACurl::Method::HTTP_POST)
                                                .withTimeout(config::REQUEST_TIMEOUT)
                                                .withHeaders(std::move(headers))
                                                .withBody(query.toStdString())
                                                .withWriteCallback([&parseBuffer, &jsonTempBuffer](AByteBufferView buffer) -> size_t {
-                                                   ALOG_DEBUG(LOG_TAG) << "QueryStreaming piece " << buffer.toStdStringView();
+                                                   ALOG_TRACE(LOG_TAG) << "QueryStreaming piece " << buffer.toStdStringView();
                                                    jsonTempBuffer << buffer;
                                                    try {
                                                        parseBuffer();
@@ -223,6 +202,9 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, A
                                                    return buffer.size();
                                                })
                                                .runAsync();
+        if (httpResponse.code != ACurl::ResponseCode::HTTP_200_OK) {
+            ALogger::warn(LOG_TAG) << "chatStreaming: status=" << httpResponse.code;
+        }
         // finalize
         parseBuffer();
 
@@ -231,7 +213,16 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, A
         AUI_ASSERT(AThread::current() == caller);
 #endif
         AThread::processMessages();
-    }();
+        printer->finish();
+        if (auto promptTokensDetails = result->response->prompt_tokens_details.asObjectOpt()) {
+            if (auto cacheWriteTokens = (*promptTokensDetails)["cache_write_tokens"].asLongIntOpt()) {
+                if (*cacheWriteTokens == 0) {
+                    ALogger::warn(LOG_TAG) << "Response states that no tokens were written to cache! Provider: \"" << result->response->provider << "\"";
+                }
+            }
+        }
+        AFileOutputStream(logsDir / "{}.1response.json"_format(now)) << AJson::toString(aui::to_json(*result->response));
+    }(std::move(query), result, std::move(params), std::move(printer), now, messages.sessionId);
     return result;
 }
 

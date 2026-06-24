@@ -92,7 +92,7 @@ TEST(OpenAIChatIntegration, Basic) {
         EXPECT_LT(0, response.usage.prompt_tokens);
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }
@@ -127,7 +127,7 @@ TEST(OpenAIChatIntegration, BasicStreaming) {
             << response;
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }
@@ -156,7 +156,7 @@ TEST(OpenAIChatIntegration, ToolUsage) {
         auto session = _new<OpenAIChatImpl>();
         IOpenAIChat::Params params{ .systemPrompt = SYSTEM_PROMPT, .config = config::ENDPOINT_CHEAP_LLM, .tools = tools.asJson() };
 
-        AVector<IOpenAIChat::Message> messages = {
+        IOpenAIChat::Session messages = {
             {
                 .role = IOpenAIChat::Message::Role::USER,
                 .content = "Answer SHORTLY. What time is it?"
@@ -173,7 +173,7 @@ TEST(OpenAIChatIntegration, ToolUsage) {
         EXPECT_TRUE(response.choices[0].message.content.contains("12:00"));
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }
@@ -205,7 +205,7 @@ TEST(OpenAIChatIntegration, BasicStreamingToolCalls) {
             }
         };
 
-        AVector<IOpenAIChat::Message> messages{
+        IOpenAIChat::Session messages{
             {IOpenAIChat::Message::Role::USER, "Answer SHORTLY. What time is it? Do not make up information; if you don't have access to a tool, report it."}
         };
         auto session = _new<OpenAIChatImpl>();
@@ -233,7 +233,7 @@ TEST(OpenAIChatIntegration, BasicStreamingToolCalls) {
         EXPECT_TRUE(response.content.contains("12:00")) << response.content;
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }
@@ -246,7 +246,7 @@ TEST(OpenAIChatIntegration, ImageRecognition) {
         auto session = _new<OpenAIChatImpl>();
         IOpenAIChat::Params params{ .systemPrompt = SYSTEM_PROMPT, .config = config::ENDPOINT_PHOTO_TO_TEXT, .seed = 3 };
 
-        AVector<IOpenAIChat::Message> messages = {
+        IOpenAIChat::Session messages = {
             {
                 .role = IOpenAIChat::Message::Role::USER,
                 .content = "{}\nWhat is it?"_format(IOpenAIChat::embedImage(*AImage::fromFile(TEST_DATA / "sussybaka.jpg") )),
@@ -259,7 +259,7 @@ TEST(OpenAIChatIntegration, ImageRecognition) {
         EXPECT_TRUE(content.contains("cat")) << "\"cat\" should be mentioned: " << content;
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 }
@@ -284,7 +284,7 @@ TEST(OpenAIChatIntegration, ToolAttachments) {
         auto session = _new<OpenAIChatImpl>();
         IOpenAIChat::Params params{ .systemPrompt = SYSTEM_PROMPT, .tools = tools.asJson() };
 
-        AVector<IOpenAIChat::Message> messages = {
+        IOpenAIChat::Session messages = {
             {
                 .role = IOpenAIChat::Message::Role::USER,
                 .content = "Please #open_attachment and describe what is it."
@@ -302,7 +302,7 @@ TEST(OpenAIChatIntegration, ToolAttachments) {
         EXPECT_TRUE(content.contains("cat")) << "\"cat\" should be mentioned: " << content;
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 
@@ -327,7 +327,7 @@ TEST(OpenAIChatIntegration, Embeddings) {
 
     }();
 
-    while (async.size() > 0) {
+    while (!async.empty()) {
         loop.iteration();
     }
 

@@ -48,7 +48,7 @@ struct IOpenAIChat {
         String reasoning_content; // deepseek requires this
         struct ToolCall {
             String id;
-            int64_t index;
+            int64_t index{};
             String type;
             struct Function {
                 String name;
@@ -89,7 +89,11 @@ struct IOpenAIChat {
         AString object;
         int64_t created;
         AString model;
+        AString provider;
         AOptional<AString> system_fingerprint;
+        AOptional<double> cost;
+        AJson prompt_tokens_details;
+        AJson cost_details;
         struct Choice {
             int64_t index;
             Message message;
@@ -110,8 +114,17 @@ struct IOpenAIChat {
         AFuture<> completed{};
     };
 
-    virtual AFuture<Response> chat(Params params, AVector<Message> messages) = 0;
-    virtual _<StreamingResponse> chatStreaming(Params params, AVector<Message> messages) = 0;
+    struct Session: AVector<Message> {
+    public:
+        using AVector<Message>::AVector;
+        AString sessionId = nextSessionId();
+
+    private:
+        static AString nextSessionId();
+    };
+
+    AFuture<Response> chat(Params params, IOpenAIChat::Session messages);
+    virtual _<StreamingResponse> chatStreaming(Params params, IOpenAIChat::Session messages) = 0;
     virtual AFuture<std::valarray<double>> embedding(Params params, AString input) = 0;
 };
 
@@ -173,7 +186,8 @@ AJSON_FIELDS(IOpenAIChat::Message::ToolCall,
              (id, "id", AJsonFieldFlags::OPTIONAL)
              (type, "type", AJsonFieldFlags::OPTIONAL)
              (function, "function", AJsonFieldFlags::OPTIONAL)
-             AJSON_FIELDS_ENTRY(index))
+             (index, "index", AJsonFieldFlags::OPTIONAL)
+             )
 
 AJSON_FIELDS(IOpenAIChat::Message,
              (role, "role", AJsonFieldFlags::OPTIONAL)
@@ -187,16 +201,38 @@ AJSON_FIELDS(IOpenAIChat::Response::Choice,
              AJSON_FIELDS_ENTRY(index) AJSON_FIELDS_ENTRY(message) AJSON_FIELDS_ENTRY(finish_reason))
 
 AJSON_FIELDS(IOpenAIChat::Response,
-             AJSON_FIELDS_ENTRY(id) AJSON_FIELDS_ENTRY(object) AJSON_FIELDS_ENTRY(created) AJSON_FIELDS_ENTRY(model)
-                 AJSON_FIELDS_ENTRY(system_fingerprint) AJSON_FIELDS_ENTRY(choices)
-                 (usage, "usage", AJsonFieldFlags::OPTIONAL))
+             AJSON_FIELDS_ENTRY(id)
+             AJSON_FIELDS_ENTRY(object)
+             AJSON_FIELDS_ENTRY(created)
+             AJSON_FIELDS_ENTRY(model)
+             (system_fingerprint, "system_fingerprint", AJsonFieldFlags::OPTIONAL)
+             AJSON_FIELDS_ENTRY(choices)
+             (usage, "usage", AJsonFieldFlags::OPTIONAL)
+             (provider, "provider", AJsonFieldFlags::OPTIONAL)
+             (cost, "cost", AJsonFieldFlags::OPTIONAL)
+             (cost_details, "cost_details", AJsonFieldFlags::OPTIONAL)
+             (prompt_tokens_details, "prompt_tokens_details", AJsonFieldFlags::OPTIONAL)
+             )
 
 template<>
 struct AJsonConv<IOpenAIChat::Response::Usage> {
     static void fromJson(const AJson& v, IOpenAIChat::Response::Usage& dst);
+    static AJson toJson(const IOpenAIChat::Response::Usage& from);
 };
 
 template<>
-struct AJsonConv<AVector<IOpenAIChat::Message>> {
-    static AJson toJson(const AVector<IOpenAIChat::Message>& v);
+struct AJsonConv<IOpenAIChat::Session> {
+    static AJson toJson(const IOpenAIChat::Session& v);
+    static void fromJson(AJson json, IOpenAIChat::Session& dst);
 };
+
+template<>
+struct AJsonConv<AJson> {
+    static AJson toJson(const AJson& json) {
+        return json;
+    }
+    static void fromJson(const AJson& from, AJson& dst) {
+        dst = from;
+    }
+};
+
