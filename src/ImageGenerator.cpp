@@ -19,6 +19,14 @@
 static constexpr auto LOG_TAG = "ImageGenerator";
 static constexpr auto TRIAL_COUNT = 10;
 
+/**
+ * @brief Minimize risk of generating too young/child characters.
+ * @details
+ * This flag adjusts prompts the ImageGenerator won't make up children. This is a safety precaution for the instance
+ * owner since CP is prohibited in many jurisdictions.
+ */
+static constexpr auto PREVENT_GENERATING_CHILDREN = true;
+
 static AJson parseResponse(AString content) {
     // Basic JSON extraction if the model wrapped it in markdown
     if (content.contains("```json")) {
@@ -263,6 +271,9 @@ Negative prompt is what to avoid in the image.
             out.positive += badWord;
         }
     }
+    if constexpr (PREVENT_GENERATING_CHILDREN) {
+        out.negative += " child";
+    }
 
 
     co_return;
@@ -312,6 +323,9 @@ Output your assessment in JSON format with the following fields:
 {}
 )";
     params.systemPrompt = params.systemPrompt.format(description);
+    if constexpr (PREVENT_GENERATING_CHILDREN) {
+        params.systemPrompt += "\nThe character(s) must not appear as child";
+    }
 
     IOpenAIChat::Session messages = {
         IOpenAIChat::Message{
