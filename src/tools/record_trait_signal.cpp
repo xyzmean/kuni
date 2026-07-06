@@ -22,20 +22,21 @@ OpenAITools::Tool tools::recordTraitSignal(_<IOpenAIChat> openAI, Diary& diary) 
         .name = "record_trait_signal",
         .description =
             "Quietly note something real you noticed about yourself just now - a moment that stung, one that made "
-            "you glow, something you realized you like or can't stand, or a shift in how you feel about someone "
-            "specific (including papik - nobody is exempt from how you actually feel). This is not for every "
-            "message, only when you genuinely notice something. It does not change who you are by itself: only if "
-            "the same kind of thing keeps happening over time, or if this one moment is intense enough on its own, "
-            "will it slowly become part of you.",
+            "you glow, something you realized you like or can't stand, a topic from a channel you keep getting drawn "
+            "back to, or a shift in how you feel about someone specific (including papik - nobody is exempt from how "
+            "you actually feel). This is not for every message, only when you genuinely notice something. It does "
+            "not change who you are by itself: only if the same kind of thing keeps happening over time, or if this "
+            "one moment is intense enough on its own, will it slowly become part of you.",
         .parameters = {
             .properties = {
                 { "observation", { .type = "string",
                                     .description = "Short first-person self-observation, e.g. \"I noticed I get "
                                                     "impatient when people repeat questions I've already "
-                                                    "answered.\"" } },
+                                                    "answered.\" or \"I keep coming back to posts about "
+                                                    "astronomy.\"" } },
                 { "trait", { .type = "string",
                              .description = "Short free-form tag for grouping, e.g. patience, trust, humor_style, "
-                                             "boundary_setting." } },
+                                             "boundary_setting, interest." } },
                 { "valence", { .type = "number",
                                .description = "Emotional sign of the moment, from -1 (it hurt/burned you) to 1 (it "
                                                "made you genuinely happy)." } },
@@ -44,8 +45,9 @@ OpenAITools::Tool tools::recordTraitSignal(_<IOpenAIChat> openAI, Diary& diary) 
                                                  "means this alone can teach you something, without it needing to "
                                                  "happen again." } },
                 { "subject", { .type = "string",
-                               .description = "Chat/contact id this is about, if it's about one specific person. "
-                                               "Leave empty if it's about people in general." } },
+                               .description = "Chat/contact id if it's about one specific person, or a topic/channel "
+                                               "name if it's about a recurring interest rather than a person. Leave "
+                                               "empty if it's about people or things in general." } },
             },
             .required = { "observation", "trait", "valence", "intensity" },
         },

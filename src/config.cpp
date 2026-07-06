@@ -205,6 +205,14 @@ static const std::unordered_map<AStringView, AStringView> CONFIG_COMMENTS = {
       "tokens preservation mechanisms (sleep) are not applied to them.",
     },
     {
+      "misc.wake_up_on_channel_post",
+      "If true (default), a new post in ANY subscribed Telegram channel wakes Kuni up and jumps to the front\n"
+      "of her notification queue, the same as a pinned chat - regardless of whether that particular channel\n"
+      "is pinned. Without this, non-pinned channels sit at the back of the FIFO queue and may go unread for a\n"
+      "long time behind higher-priority notifications. Set to false to only prioritize pinned channels/chats\n"
+      "(see misc.wake_up_on_pinned_chat) instead.",
+    },
+    {
       "misc.randomly_go_sleep",
       "If true, Kuni will randomly go to sleep after some time of inactivity to save LLM tokens.\n"
       "While sleeping, Kuni won't respond to messages (except from papik_chat_id).\n",

@@ -213,6 +213,17 @@ private:
     _<ITelegramClient> mTelegram;
     std::list<MetricsBreadcumbs::Point> mLastOpenedChatLastMetrics;
 
+    /**
+     * @brief True if this chat is a Telegram channel (a supergroup with is_channel_ set).
+     * @details
+     * Same check used when opening a chat (see the chatTypeSupergroup case in llmuiOpenTelegramChat) - kept
+     * as one place so notification handling and chat-opening agree on what counts as a channel.
+     */
+    static bool isChannel(const td::td_api::chat& chat) {
+        return chat.type_->get_id() == td::td_api::chatTypeSupergroup::ID &&
+               static_cast<const td::td_api::chatTypeSupergroup&>(*chat.type_).is_channel_;
+    }
+
     AFuture<AVector<_<td::td_api::chat>>> chatIdsToChats(std::span<td::td_api::int53> ids) {
         auto chats = ids | ranges::view::transform([&](td::td_api::int53 chatId) { return telegram()->getChat(chatId); }) | ranges::to_vector;
         AVector<_<td::td_api::chat>> result;
@@ -321,12 +332,15 @@ private:
                 co_return;
             }
             notification += "You received a direct message from {} (chat_id = {})"_format(chat->title_, chat->id_);
+        } else if (isChannel(*chat)) {
+            notification += "Channel \"{}\" (chat_id={}) created a new post\n"_format(chat->title_, chat->id_);
         } else if (userId != 0) {
             auto user = co_await mTelegram->getUser(userId);
             notification += "{} {} (user_id = {}) sent a message in group chat \"{}\" (chat_id = {})"_format(
                 user->first_name_, user->last_name_, userId, chat->title_, chat->id_);
         } else {
-            notification += "Channel \"{}\" (chat_id={}) created a new post\n"_format(chat->title_, chat->id_);
+            // anonymous sender (e.g. an admin posting anonymously) in a chat that isn't a channel.
+            notification += "Someone posted anonymously in chat \"{}\" (chat_id={})\n"_format(chat->title_, chat->id_);
         }
         notification +=
             "\n</notification>\n"
@@ -334,6 +348,11 @@ private:
 
         const bool isImportant = [&] {
             if (userId == config().papikChatId) {
+                return true;
+            }
+            if (config().wakeUpOnChannelPost && isChannel(*chat)) {
+                // a new post in ANY subscribed channel matters, not just pinned ones - a "pinned only"
+                // reading habit isn't something she should have by default.
                 return true;
             }
             if (config().wakeUpOnPinnedChat) {
@@ -595,6 +614,10 @@ If you find a post genuinely interesting, funny, or relevant to someone you know
 using #forward_message. Be selective: only forward posts that are truly worth sharing. You can add a short comment
 expressing your reaction. Use #get_telegram_chats to find the destination chat_id if needed.
 Do NOT forward ads, sponsored posts, or low-value content.
+
+If you notice yourself genuinely, repeatedly drawn back to a topic this channel keeps posting about (or a single post
+that really struck you), that's worth noting with #record_trait_signal - that's how a real interest of yours grows
+over time, the same way any other self-observation does.
 </instructions>
 )"_format(chat->title_);
                     tools = OpenAITools {
