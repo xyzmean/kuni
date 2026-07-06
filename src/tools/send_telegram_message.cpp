@@ -333,8 +333,15 @@ OpenAITools::Tool tools::sendTelegramMessage(
             AString originalMessage = message;
             message = trySimulateTypos(std::move(message));
             AOptional<AString> correctionMessage;
+            bool shouldEdit = false;
             if (message != originalMessage && originalMessage.length() < 30 && !originalMessage.contains("\n")) {
-                correctionMessage = "*" + originalMessage;
+                double r = std::uniform_real_distribution(0.0, 1.0)(gRandomEngine);
+                if (r < 0.3) {
+                    correctionMessage = "*" + originalMessage;
+                } else if (r < 0.6) {
+                    shouldEdit = true;
+                }
+                // else 40% chance she doesn't notice/care to fix it
             }
 
             AString result;
@@ -368,6 +375,20 @@ OpenAITools::Tool tools::sendTelegramMessage(
                     co_await simulateTypingDelay(correctionMessage->length());
                     auto sentCorr = co_await util::telegramPostMessage(*telegram, chat->id_, *correctionMessage, {}, {}, 0);
                     result += "\nCorrection message sent: text=\"{}\"."_format(llmui::extractMessageTypeAndText(*sentCorr));
+                } else if (shouldEdit) {
+                    co_await simulateTypingDelay(originalMessage.length() / 2); // faster because just editing
+                    
+                    auto content = td::td_api::make_object<td::td_api::inputMessageText>();
+                    content->text_ = [&] {
+                        auto t = td::td_api::make_object<td::td_api::formattedText>();
+                        t->text_ = originalMessage.toStdString();
+                        return t;
+                    }();
+
+                    co_await telegram->sendQueryWithResult(
+                        ITelegramClient::toPtr(td::td_api::editMessageText(chat->id_, sent->id_, nullptr, std::move(content))));
+                        
+                    result += "\nMessage was later edited to fix a typo.";
                 }
             }
 
