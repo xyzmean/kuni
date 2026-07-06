@@ -167,6 +167,10 @@ Do not make up facts. Rely exclusively on provided context.
     }
 }
 
+AFuture<AString> tools::askDebugQuery(IOpenAIChat& openAI, Diary& diary, const AString& query) {
+    co_return co_await ask(openAI, diary, query, {.confidenceFactor = 0.f});
+}
+
 OpenAITools::Tool
 tools::ask(std::function<AString()> additionalDetails, _<IOpenAIChat> openAI, Diary& diary) {
     return {

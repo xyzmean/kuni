@@ -633,6 +633,35 @@ AUI_ENTRY {
         _new<KuniDebugWindow>()->show();
         return 0;
     }
+    if (args.contains("--ask-diary")) {
+        // Headless equivalent of the --debug DiaryQueryAI view: runs the same #ask/#query RAG loop against
+        // data/diary from a terminal, without needing Telegram or a display server.
+        AString question;
+        bool collecting = false;
+        for (const auto& a : args) {
+            if (collecting) {
+                if (!question.empty()) question += " ";
+                question += a;
+            } else if (a == "--ask-diary") {
+                collecting = true;
+            }
+        }
+        if (question.empty()) {
+            ALogger::err(LOG_TAG) << "Usage: kuni --ask-diary \"your question\"";
+            return 1;
+        }
+        auto openAI = _new<OpenAIChatMeasurable>(std::make_unique<OpenAIChatImpl>());
+        Diary diary({ .diaryDir = "data/diary", .openAI = openAI });
+        AAsyncHolder async;
+        async << [&]() -> AFuture<> {
+            auto answer = co_await tools::askDebugQuery(*openAI, diary, question);
+            std::cout << "\n" << answer << "\n" << std::endl;
+            gEventLoop.stop();
+        }();
+        IEventLoop::Handle h(&gEventLoop);
+        gEventLoop.loop();
+        return 0;
+    }
 
     using namespace std::chrono_literals;
     auto telegram = _new<TelegramClientImpl>();
