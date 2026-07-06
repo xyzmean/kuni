@@ -15,7 +15,7 @@ public:
         _<IOpenAIChat> openAI;
     };
     AppBase(Init init);
-    static AString getSystemPrompt();
+    AString getSystemPrompt() const;
 
     struct Notification {
         AString message;
@@ -146,6 +146,7 @@ private:
     _<ATimer> mDiaryTimer;
     _<ATimer> mPersonalityTimer;
     // OpenAITools mTools;
+    AString mSystemPromptSuffix;
 
     bool mWakeup = false;
 

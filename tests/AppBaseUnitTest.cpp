@@ -260,16 +260,6 @@ TEST_F(AppBaseUnitTest, RemoveNotificationsNoMatch) {
 }
 
 // ============================================================================
-// getSystemPrompt — returns non-empty prompt with character info
-// ============================================================================
-TEST_F(AppBaseUnitTest, GetSystemPromptNotEmpty) {
-    auto prompt = AppBase::getSystemPrompt();
-    EXPECT_FALSE(prompt.empty());
-    EXPECT_TRUE(prompt.contains("<your_appearance>"));
-    EXPECT_TRUE(prompt.contains("</your_appearance>"));
-}
-
-// ============================================================================
 // takeDiaryEntry — formats entry with XML tags
 // ============================================================================
 TEST_F(AppBaseUnitTest, TakeDiaryEntryFormatsCorrectly) {

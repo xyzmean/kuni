@@ -17,6 +17,7 @@ struct Prompts {
     AString recordAudioSpeech;
     AString characterGrowth;
     AString personalityConsolidator;
+    AString messagesEpilogue;
 };
 
 const Prompts& prompts();
