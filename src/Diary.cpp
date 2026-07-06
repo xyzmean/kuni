@@ -2,6 +2,7 @@
 
 #include "AppBase.h"
 
+#include <limits>
 #include <random>
 #include <range/v3/action/sort.hpp>
 
@@ -347,5 +348,181 @@ AFuture<> Diary::sleepingConsolidation() {
     }
     reachedMaxSleepTime:
     reload();
+}
+
+struct PersonalitySignalMeta {
+    AString trait;
+    float valence = 0.f;
+    float intensity = 0.f;
+    AString subject;
+};
+
+AJSON_FIELDS(PersonalitySignalMeta, AJSON_FIELDS_ENTRY(trait) AJSON_FIELDS_ENTRY(valence) AJSON_FIELDS_ENTRY(intensity)
+                                         AJSON_FIELDS_ENTRY(subject))
+
+AFuture<> Diary::personalityConsolidation() {
+    ALOG_TRACE(LOG_TAG) << "personalityConsolidation";
+    // this is her own, slow, irreversible personality drift - not something we grant or revoke permission
+    // for. personalityGrowthEnabled exists only as an emergency circuit breaker (see config.h comments).
+    if (!config().personalityGrowthEnabled) {
+        co_return;
+    }
+
+    reload();
+
+    // gather her own self-observations, generating embeddings for whichever don't have one yet.
+    AVector<std::list<EntryEx>::iterator> traitSignals;
+    for (auto it = mCachedDiary->begin(); it != mCachedDiary->end(); ++it) {
+        if (it->metadata.kind != "trait_signal") {
+            continue;
+        }
+        if (it->metadata.embedding.size() == 0) {
+            try {
+                it->metadata.embedding = co_await openAI()->embedding({ .config = config().embedding }, it->freeformBody);
+                save(*it);
+            } catch (const AException& e) {
+                ALogger::err(LOG_TAG) << "personalityConsolidation can't embed " << it->id << ": " << e;
+                continue;
+            }
+        }
+        traitSignals << it;
+    }
+
+    if (traitSignals.empty()) {
+        co_return;
+    }
+
+    // cluster similar self-observations together - only ever comparing observations about the same subject
+    // (or all the general, not-about-one-person ones together).
+    AVector<AVector<size_t>> clusters;
+    AVector<bool> clustered(traitSignals.size(), false);
+    for (size_t i = 0; i < traitSignals.size(); i++) {
+        if (clustered[i]) {
+            continue;
+        }
+        AVector<size_t> cluster{ i };
+        clustered[i] = true;
+        for (size_t j = i + 1; j < traitSignals.size(); j++) {
+            if (clustered[j]) {
+                continue;
+            }
+            if (traitSignals[i]->metadata.subject != traitSignals[j]->metadata.subject) {
+                continue;
+            }
+            const auto similarity =
+                (util::cosine_similarity(traitSignals[i]->metadata.embedding, traitSignals[j]->metadata.embedding) + 1.0) / 2.0;
+            if (similarity >= config().personalitySimilarityThreshold) {
+                cluster << j;
+                clustered[j] = true;
+            }
+        }
+        clusters << std::move(cluster);
+    }
+
+    // she reflects on one thing at a time - pick at most one qualifying cluster per consolidation.
+    const AVector<size_t>* chosen = nullptr;
+    for (const auto& cluster : clusters) {
+        bool flashbulb = false;
+        for (auto idx : cluster) {
+            if (traitSignals[idx]->metadata.intensity >= config().personalityFlashbulbIntensityThreshold) {
+                flashbulb = true;
+                break;
+            }
+        }
+        if (flashbulb) {
+            // a single intense moment ("she got burned") doesn't need to wait for a pattern to repeat.
+            chosen = &cluster;
+            break;
+        }
+        if (cluster.size() < config().personalityMinCorroboration) {
+            continue;
+        }
+        auto minId = std::numeric_limits<int64_t>::max();
+        auto maxId = std::numeric_limits<int64_t>::min();
+        float confidenceSum = 0.f;
+        for (auto idx : cluster) {
+            const auto idValue = traitSignals[idx]->id.toLong().valueOr(0);
+            minId = std::min(minId, idValue);
+            maxId = std::max(maxId, idValue);
+            confidenceSum += traitSignals[idx]->metadata.confidence;
+        }
+        const auto spanDays = (maxId - minId) / (60 * 60 * 24);
+        if (spanDays < static_cast<int64_t>(config().personalityMinSpanDays)) {
+            continue; // hasn't recurred over enough real time yet.
+        }
+        const auto avgConfidence = confidenceSum / static_cast<float>(cluster.size());
+        if (avgConfidence < config().personalityMinConfidence) {
+            continue; // sleepingConsolidation() hasn't corroborated this enough yet.
+        }
+        if (!chosen || cluster.size() > chosen->size()) {
+            chosen = &cluster;
+        }
+    }
+
+    if (!chosen) {
+        co_return; // nothing corroborated or intense enough yet - she keeps waiting, like a real person would.
+    }
+
+    AString observationsBody;
+    for (auto idx : *chosen) {
+        const auto& entry = *traitSignals[idx];
+        if (!observationsBody.empty()) {
+            observationsBody += "\n\n---\n\n";
+        }
+        observationsBody += AJson::toString(aui::to_json(PersonalitySignalMeta{
+            .trait = entry.metadata.trait,
+            .valence = entry.metadata.valence,
+            .intensity = entry.metadata.intensity,
+            .subject = entry.metadata.subject,
+        }));
+        observationsBody += "\n";
+        observationsBody += entry.freeformBody;
+    }
+
+    const auto body = R"(<current_personality_growth>
+{}
+</current_personality_growth>
+
+<immutable_core_reference just_for_context_do_not_rewrite>
+{}
+</immutable_core_reference>
+
+<corroborated_self_observations>
+{}
+</corroborated_self_observations>)"_format(prompts().characterGrowth, prompts().characterBase, observationsBody);
+
+    IOpenAIChat::Response response;
+    try {
+        response = co_await openAI()->chat({
+            .systemPrompt = prompts().personalityConsolidator,
+            .config = config().llm,
+        }, { { .role = IOpenAIChat::Message::Role::USER, .content = body } });
+    } catch (const AException& e) {
+        ALogger::err(LOG_TAG) << "personalityConsolidation can't chat " << e;
+        co_return; // skip this cycle - nothing was written, so there's nothing to undo.
+    }
+
+    auto newGrowth = response.choices.at(0).message.content.trim(' ').trim('\n');
+
+    // write-time validation only, by design - no backups, no history, no rollback. an invalid result just
+    // means this cycle is skipped and the old character_growth.md is left exactly as it was.
+    if (newGrowth.empty() || newGrowth.length() > config().personalityGrowthMaxChars) {
+        ALogger::warn(LOG_TAG) << "personalityConsolidation produced invalid output (length=" << newGrowth.length()
+                                << "), skipping this cycle";
+        co_return;
+    }
+
+    saveCharacterGrowth(newGrowth);
+
+    // she's internalized these observations now - stop carrying them around individually so the same
+    // cluster doesn't keep re-triggering consolidation forever.
+    for (auto idx : *chosen) {
+        const auto id = traitSignals[idx]->id;
+        mCachedDiary->erase(traitSignals[idx]);
+        auto file = mInit.diaryDir / "{}.md"_format(id);
+        if (file.isRegularFileExists()) {
+            file.removeFile();
+        }
+    }
 }
 

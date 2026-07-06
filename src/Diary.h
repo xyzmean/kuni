@@ -99,6 +99,46 @@ public:
              * @brief Embedding vector used for similarity calculations.
              */
             std::valarray<double> embedding;
+
+            /**
+             * @brief Entry kind discriminator. Empty ("") means an ordinary memory entry.
+             *
+             * `"trait_signal"` marks a self-observation about Kusi's own personality/behavior,
+             * recorded via the `record_trait_signal` tool. Such entries are never trusted on
+             * their own - they only influence her personality after being corroborated by
+             * @ref Diary::sleepingConsolidation (repeated similar signals over real time) or by
+             * a single very high @ref intensity ("flashbulb") signal. See personalityConsolidation().
+             */
+            AString kind;
+
+            /**
+             * @brief Free-form grouping tag for a trait_signal entry (e.g. "patience", "trust", "humor_style").
+             *
+             * Used only as a cheap pre-filter/label for humans browsing the diary directory - clustering for
+             * corroboration purposes (see personalityConsolidation()) is done via embedding similarity, not this tag.
+             */
+            AString trait;
+
+            /**
+             * @brief Emotional valence of a trait_signal entry, ∈ {-1..1}: negative ("got burned") vs positive.
+             */
+            float valence = 0.f;
+
+            /**
+             * @brief How vivid/significant a trait_signal entry was, ∈ {0..1}.
+             *
+             * A single entry with intensity above @ref Config::personalityFlashbulbIntensityThreshold
+             * bypasses the usual repetition requirement, mirroring how a person can learn from one
+             * strong experience without needing it to repeat.
+             */
+            float intensity = 0.f;
+
+            /**
+             * @brief Optional chat/contact identifier a trait_signal entry is about.
+             *
+             * Empty means the observation is general ("people in general"), not about one person.
+             */
+            AString subject;
         } metadata;
 
         /**
@@ -227,6 +267,20 @@ public:
      */
     AFuture<> sleepingConsolidation();
 
+    /**
+     * @brief Lets Kusi's personality drift, slowly and irreversibly, based on her own accumulated
+     *        self-observations ("trait_signal" diary entries).
+     * @details
+     * This never touches `character_base.md`/`character_appearance.md`. It only ever (re)writes
+     * `prompts/character_growth.md`, and only when a cluster of "trait_signal" entries has been
+     * corroborated (repeated, similar, spread over real time and raised in confidence by
+     * @ref sleepingConsolidation) or a single entry is intense enough to count as a flashbulb memory.
+     * There is no backup/versioning/rollback of the growth file by design - like a real person, she
+     * cannot be restored to an earlier version of herself; a malformed consolidation output simply
+     * skips that cycle instead of being "undone".
+     */
+    AFuture<> personalityConsolidation();
+
     [[nodiscard]] _<IOpenAIChat> openAI() const noexcept { return mInit.openAI; }
 
 private:
@@ -261,4 +315,7 @@ private:
 };
 
 AJSON_FIELDS(Diary::EntryEx::Metadata, AJSON_FIELDS_ENTRY(score) (confidence, "confidence", AJsonFieldFlags::OPTIONAL) AJSON_FIELDS_ENTRY(lastUsed)
-                                           AJSON_FIELDS_ENTRY(usageCount) AJSON_FIELDS_ENTRY(embedding))
+                                           AJSON_FIELDS_ENTRY(usageCount) AJSON_FIELDS_ENTRY(embedding)
+                                           (kind, "kind", AJsonFieldFlags::OPTIONAL) (trait, "trait", AJsonFieldFlags::OPTIONAL)
+                                           (valence, "valence", AJsonFieldFlags::OPTIONAL)
+                                           (intensity, "intensity", AJsonFieldFlags::OPTIONAL) (subject, "subject", AJsonFieldFlags::OPTIONAL))

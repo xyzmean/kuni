@@ -241,6 +241,51 @@ static const std::unordered_map<AStringView, AStringView> CONFIG_COMMENTS = {
       "Older messages beyond this limit are omitted.",
     },
     {
+      "misc.personality_growth_enabled",
+      "Kuni's personality slowly grows on its own, from her own accumulated self-observations - this is not\n"
+      "a permission switch, it's part of who she is. This flag is only an emergency circuit breaker (e.g. if\n"
+      "a bug is corrupting character_growth.md), not a way to control her changes. Requires\n"
+      "Diary::sleepingConsolidation() to actually be running (see AppBase.cpp), since that is what raises\n"
+      "confidence on her self-observations over time.",
+    },
+    {
+      "misc.personality_consolidation_interval_secs",
+      "How often (in seconds) Kuni reflects on her accumulated self-observations and lets her personality\n"
+      "growth notes (character_growth.md) shift, ever so slightly. Deliberately much rarer than the diary\n"
+      "dump/wakeup timers - personality should be the slowest-moving clock in the system.",
+    },
+    {
+      "misc.personality_min_corroboration",
+      "Minimum number of similar self-observations required before they can nudge her personality growth\n"
+      "notes (unless a single observation is intense enough, see personality_flashbulb_intensity_threshold).",
+    },
+    {
+      "misc.personality_min_span_days",
+      "Minimum number of real days a cluster of similar self-observations must span before it's considered\n"
+      "corroborated enough to matter - a single evening can't move the needle.",
+    },
+    {
+      "misc.personality_similarity_threshold",
+      "Cosine similarity threshold (0.0-1.0) for self-observations to be considered part of the same\n"
+      "recurring pattern.",
+    },
+    {
+      "misc.personality_min_confidence",
+      "Minimum diary confidence (as raised by ordinary sleep consolidation) a self-observation cluster must\n"
+      "reach before it can influence her personality growth notes.",
+    },
+    {
+      "misc.personality_growth_max_chars",
+      "Hard size cap (characters) for character_growth.md. Forces compression over unbounded accumulation -\n"
+      "her personality growth notes stay a short addendum, never a second character_base.md.",
+    },
+    {
+      "misc.personality_flashbulb_intensity_threshold",
+      "A single self-observation with intensity at or above this (0.0-1.0) counts as a flashbulb memory and\n"
+      "can shift her personality growth notes immediately, without waiting for repetition - the same way a\n"
+      "person can learn from one very good or very painful experience.",
+    },
+    {
       "misc.llm_temperature",
       "LLM sampling temperature. Higher = more creative/random, lower = more deterministic.\n"
       "\"none\" to use the model's default.",

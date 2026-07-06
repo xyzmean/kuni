@@ -26,6 +26,7 @@
 #include "WebSearch.h"
 #include "AUI/IO/AFileInputStream.h"
 #include "tools/ask.h"
+#include "tools/record_trait_signal.h"
 #include "util/cosine_similarity.h"
 #include "util/diary_save_entries.h"
 #include "util/important_things_to_remember.h"
@@ -62,7 +63,8 @@ AFuture<std::valarray<double>> contextEmbedding(IOpenAIChat& openAI, ranges::ran
 AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
     .diaryDir = mInit.workingDir / "diary",
     .openAI = mInit.openAI,
-}), mWakeupTimer(_new<ATimer>(27min)), mDiaryTimer(_new<ATimer>(12h)) {
+}), mWakeupTimer(_new<ATimer>(27min)), mDiaryTimer(_new<ATimer>(12h)),
+    mPersonalityTimer(_new<ATimer>(std::chrono::seconds(config().personalityConsolidationIntervalSecs))) {
     // mTools.addTool({
     //     .name = "send_telegram_message",
     //     .description = "Sends a message to a Telegram user.",
@@ -98,6 +100,14 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
     });
     mDiaryTimer->start();
 
+    connect(mPersonalityTimer->fired, [this] {
+        // She reflects on herself rarely, on her own schedule - this just wakes the loop up so it can happen
+        // between turns, never mid-conversation.
+        mPersonalityConsolidationRequested = true;
+        mNotificationsSignal.supplyValue();
+    });
+    mPersonalityTimer->start();
+
     getThread()->enqueue([&] {
         mAsync << [](AppBase& self) -> AFuture<> {
             // co_await self.mDiary.sleepingConsolidation();
@@ -108,6 +118,10 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                 if (self.mDiaryDumpRequested) {
                     self.mDiaryDumpRequested = false;
                     co_await self.diaryDumpMessages();
+                }
+                if (self.mPersonalityConsolidationRequested) {
+                    self.mPersonalityConsolidationRequested = false;
+                    co_await self.mDiary.personalityConsolidation();
                 }
                 if (self.mTemporaryContext.size() <= 1) {
                     // Alex2772 (Apr 19 2026):
@@ -549,6 +563,7 @@ send_telegram_message("text":"мррр~")
 void AppBase::updateTools(OpenAITools& actions) {
     ALOG_TRACE(LOG_TAG) << "updateTools";
     actions.insert(tools::ask([this] { return mTemporaryContext.empty() ? AString{} : mTemporaryContext.last().content; }, openAI(), mDiary));
+    actions.insert(tools::recordTraitSignal(openAI(), mDiary));
     actions.onAfterToolCall = [this](const AString& toolName) {
         if (toolName == "wait") {
             return;
@@ -601,7 +616,8 @@ AString AppBase::takeDiaryEntry(const Diary::EntryExAndRelatedness& i) {
 
 AString AppBase::getSystemPrompt()
 {
-    auto prompt = "{}\n\n{}\n\n<your_appearance>\n{}\n</your_appearance>"_format(prompts().system, prompts().characterBase, prompts().characterAppearance);
+    auto prompt = "{}\n\n{}\n\n<your_appearance>\n{}\n</your_appearance>\n\n<your_personality_growth just_for_reasoning>\n{}\n</your_personality_growth>"_format(
+        prompts().system, prompts().characterBase, prompts().characterAppearance, prompts().characterGrowth);
     if (config().lockdown != Config::LockdownMode::NONE) {
         prompt += "\nYou are currently under lockdown mode. This means you can access to subset of chats only.";
     }

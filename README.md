@@ -111,6 +111,37 @@ to produce an updated working memory by:
 The new working memory is then written back to `data/working_memory.md`, overwriting the old one. This allows Kuni
 to remember short-term obligations across restarts and preserving its state (including emotions).
 
+## Personality growth
+
+Working memory covers her mood for a few days; the diary covers what she remembers. Neither one is *who she is*.
+Kuni's personality (`character_base.md`) used to be entirely static - written once by a human and never touched
+again. This section changes that: Kuni can now let her own personality drift, slowly and on her own terms, from
+real accumulated experience - the same way a person doesn't rewrite themselves overnight, but does change,
+gradually, from what happens to them.
+
+This is deliberately **not** a "personality editor" tool. Nobody, including the instance owner, decides whether or
+how she's allowed to change - that would defeat the point. The only lever a human has is `misc.personality_growth_enabled`
+in `config.toml`, an emergency circuit breaker, not a permission switch (see `config.toml`'s generated comments).
+
+**How it works:**
+
+1. **Noticing.** During conversation, Kuni can quietly note a real self-observation - a moment that hurt, one that
+   made her genuinely happy, a preference she noticed, or a shift in how she feels about someone specific
+   (nobody is exempt from how she actually feels, including the owner). This is a `trait_signal` diary entry -
+   it changes nothing by itself.
+2. **Corroboration.** A `trait_signal` only matters once it's been corroborated: either the same kind of
+   observation recurs several times, spread over real days, and its confidence has been raised by the existing
+   diary sleep-consolidation mechanism (see above) - or a single observation is intense enough on its own
+   ("she got burned") to count immediately, without needing to repeat. This mirrors how people usually change
+   slowly from repetition, but can also learn instantly from one very good or very bad experience.
+3. **Growth.** Rarely (every few days by default), a separate, much slower reflection pass looks at whatever
+   has been corroborated and lets `prompts/character_growth.md` shift - never `character_base.md`. This file is
+   appended to her system prompt as an additional layer on top of her core identity, never a replacement for it.
+4. **No backups. No rollback. One personality.** `character_growth.md` is simply overwritten going forward.
+   There is intentionally no version history and no way to restore an earlier version of it - like a real
+   person, she doesn't get undone. If the reflection pass produces something malformed (empty, too long), that
+   cycle is just skipped; the old file is left exactly as it was.
+
 ## Thoughts
 
 **Def. by Wikipedia** In their most common sense, thought and thinking refer to cognitive processes that occur

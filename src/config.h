@@ -23,6 +23,14 @@
   X(size_t, diaryInjectionMaxLength, 0, "misc.diary_injection_max_length") \
   X(float, diaryPlagiarismThreshold, 0.97, "misc.diary_plagiarism_threshold") \
   X(float, diaryMinRelatedness, 0.80, "misc.diary_min_relatedness") \
+  X(bool, personalityGrowthEnabled, true, "misc.personality_growth_enabled") \
+  X(size_t, personalityConsolidationIntervalSecs, 259200, "misc.personality_consolidation_interval_secs") \
+  X(size_t, personalityMinCorroboration, 3, "misc.personality_min_corroboration") \
+  X(size_t, personalityMinSpanDays, 7, "misc.personality_min_span_days") \
+  X(float, personalitySimilarityThreshold, 0.80, "misc.personality_similarity_threshold") \
+  X(float, personalityMinConfidence, 0.5, "misc.personality_min_confidence") \
+  X(size_t, personalityGrowthMaxChars, 2000, "misc.personality_growth_max_chars") \
+  X(float, personalityFlashbulbIntensityThreshold, 0.9, "misc.personality_flashbulb_intensity_threshold") \
   X(size_t, chatMaxHistoryLength, 2000, "misc.chat_max_history_length") \
   X(AOptional<float>, llmTemperature, 0.2, "misc.llm_temperature") \
   X(AOptional<float>, llmTopP, std::nullopt, "misc.llm_top_p") \
