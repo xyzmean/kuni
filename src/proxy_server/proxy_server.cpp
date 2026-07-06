@@ -378,7 +378,7 @@ Example: User says "привет" → no need for #ask, just greet back.
         app.Post("/v1/batches", basicProxy("batches"));
         app.Post("/v1/videos", basicProxy("videos"));
 
-        thread = std::thread([this] { app.listen("0.0.0.0", this->config.port); });
+        thread = std::thread([this] { app.listen("10.8.0.8", this->config.port); });
     }
 
     void onSentRequestToLLM(const AJson& request) {

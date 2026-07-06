@@ -27,7 +27,12 @@ struct OpenAITools {
             AVector<AString> required; // required properties
             bool additionalProperties = false;
         } parameters;
-        bool strict = true;
+        // NOTE: kept false because most tools (e.g. send_telegram_message) intentionally declare optional
+        // properties that aren't listed in `required` (photo_filename, reply_to_message_id, etc.). OpenAI's
+        // strict mode demands every property be required (using nullable types for the truly-optional ones),
+        // and providers that actually enforce this (Groq does; ollama.com/openrouter didn't) reject the tool's
+        // JSON schema outright with HTTP 400 "invalid JSON schema for tool ...", breaking every single request.
+        bool strict = false;
         Handler handler;
     };
 

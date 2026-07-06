@@ -51,11 +51,8 @@ AJson OpenAIChatImpl::makeQueryString(Params params, const IOpenAIChat::Session&
         },
         { "max_tokens", params.maxOutputTokens },   // hopefully helps with stuck prediction (infinite reasoning)
         { "stream", false },
-        { "use_context", false },
-        { "include_sources", true },
         { "model", params.config.model },
         { "tools", params.tools },
-        { "session_id", messages.sessionId },
     };
 
     if (config().llmTemperature) {
@@ -119,6 +116,12 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, I
     AString query = [&] {
         auto json = makeQueryString(params, messages);
         json["stream"] = true;
+        // Without this, most OpenAI-compatible SSE streams (ollama.com included) never emit a final
+        // usage-only chunk, so Response::usage silently stays zeroed for the entire request. That in turn
+        // means AppBase's diary-dump trigger (mTemporaryContext usage.total_tokens >= diaryTokenCountTrigger)
+        // can never fire for a streaming provider that needs this flag - the diary would never get written to,
+        // no matter how long the conversation runs.
+        json["stream_options"] = AJson::Object{{"include_usage", true}};
         return AJson::toString(json);
     }();
     AFileOutputStream("last_query.json") << query.toStdString();
@@ -187,14 +190,16 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, I
         if (!params.config.endpoint.bearerKey.empty()) {
             headers << "Authorization: Bearer {}"_format(params.config.endpoint.bearerKey);
         }
+        AByteBuffer rawBody;
         auto httpResponse = co_await ACurl::Builder(params.config.endpoint.baseUrl + "chat/completions")
                                                .withMethod(ACurl::Method::HTTP_POST)
                                                .withTimeout(config().requestTimeoutSecs)
                                                .withHeaders(std::move(headers))
                                                .withBody(query.toStdString())
-                                               .withWriteCallback([&parseBuffer, &jsonTempBuffer](AByteBufferView buffer) -> size_t {
+                                               .withWriteCallback([&parseBuffer, &jsonTempBuffer, &rawBody](AByteBufferView buffer) -> size_t {
                                                    ALOG_TRACE(LOG_TAG) << "QueryStreaming piece " << buffer.toStdStringView();
                                                    jsonTempBuffer << buffer;
+                                                   rawBody << buffer;
                                                    try {
                                                        parseBuffer();
                                                    } catch (const AJsonException& e) {
@@ -204,7 +209,22 @@ _<IOpenAIChat::StreamingResponse> OpenAIChatImpl::chatStreaming(Params params, I
                                                })
                                                .runAsync();
         if (httpResponse.code != ACurl::ResponseCode::HTTP_200_OK) {
-            ALogger::warn(LOG_TAG) << "chatStreaming: status=" << httpResponse.code;
+            AString body = AByteBufferView(rawBody).toStdStringView();
+            ALogger::warn(LOG_TAG) << "chatStreaming: status=" << httpResponse.code << ", body=" << body;
+            const auto code = (int) httpResponse.code;
+            if (code == 400 || code == 422) {
+                // 400/422 mean the API rejected the request's *content* (e.g. "invalid tool call arguments" or
+                // "invalid JSON schema"), most often because mTemporaryContext got corrupted (malformed tool_calls
+                // JSON persisted into history). Retrying the exact same request forever would just spam identical
+                // failures, so surface it as an exception: AppBase's notification loop already drops the
+                // (irreversibly damaged) context when it catches an AException mentioning "json" in its message.
+                //
+                // Deliberately excludes 401/403 (auth) and 429 (rate/quota limit, e.g. "free-models-per-day") -
+                // those are about the account/quota, not the request content, and will succeed again later with
+                // the *same* context once the quota resets or credentials are fixed. Dropping context for those
+                // would destroy conversation memory for no reason.
+                throw AException("chatStreaming: HTTP {} (bad request, dropping json context) - {}"_format(code, body));
+            }
         }
         // finalize
         parseBuffer();

@@ -10,6 +10,16 @@
 
 AJson AJsonConv<IOpenAIChat::Session>::toJson(const IOpenAIChat::Session& v) {
     AJson::Array result;
+    auto sanitize = [](const IOpenAIChat::Message& msg) {
+        AJson::Object obj;
+        obj["role"] = aui::to_json(msg.role);
+        obj["content"] = msg.content;
+        if (!msg.reasoning.empty()) obj["reasoning"] = msg.reasoning;
+        if (!msg.reasoning_content.empty()) obj["reasoning_content"] = msg.reasoning_content;
+        if (!msg.tool_call_id.empty()) obj["tool_call_id"] = msg.tool_call_id;
+        if (!msg.tool_calls.empty()) obj["tool_calls"] = aui::to_json(msg.tool_calls);
+        return AJson(obj);
+    };
     for (const auto& message: v) {
         // reverse engineered from vscode copilot plugin
         if (message.content.contains("</{}>"_format(IOpenAIChat::EMBEDDING_TAG))) {
@@ -18,7 +28,7 @@ AJson AJsonConv<IOpenAIChat::Session>::toJson(const IOpenAIChat::Session& v) {
                 if (msg.content.empty()) {
                     return;
                 }
-                result << aui::to_json(msg);
+                result << sanitize(msg);
             };
             for (;;) {
                 auto tagPos = content.find("<{}>"_format(IOpenAIChat::EMBEDDING_TAG));
@@ -40,7 +50,10 @@ AJson AJsonConv<IOpenAIChat::Session>::toJson(const IOpenAIChat::Session& v) {
                     {"role", aui::to_json(message.role)},
                     {"content",
                      AJson::Array{
-                         AJson::Object{{"type", "image_url"}, {"image_url", body}},
+                         // Per OpenAI's spec, "image_url" must be an object with a "url" field, not a bare
+                         // string. OpenRouter's models tolerated the bare-string shorthand, but Groq validates
+                         // strictly and rejects it with "image_url: value must be an object".
+                         AJson::Object{{"type", "image_url"}, {"image_url", AJson::Object{{"url", body}}}},
                      }},
                 };
                 append(IOpenAIChat::Message{
@@ -52,7 +65,7 @@ AJson AJsonConv<IOpenAIChat::Session>::toJson(const IOpenAIChat::Session& v) {
             }
             continue;
         }
-        result << aui::to_json(message);
+        result << sanitize(message);
     }
     return result;
 }

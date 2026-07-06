@@ -6,8 +6,8 @@ project(kuni
 
 # Compiler version check (see README for requirements)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
-        message(FATAL_ERROR "Kuni requires GCC 15+. Found: ${CMAKE_CXX_COMPILER_VERSION}. Please upgrade your compiler.")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+        message(FATAL_ERROR "Kuni requires GCC 13+. Found: ${CMAKE_CXX_COMPILER_VERSION}. Please upgrade your compiler.")
     endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)

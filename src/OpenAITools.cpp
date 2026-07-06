@@ -80,9 +80,15 @@ AFuture<IOpenAIChat::Session> OpenAITools::handleToolCalls(const AVector<IOpenAI
 AJson OpenAITools::asJson() const {
     ALOG_TRACE("OpenAITools") << "asJson";
     return ranges::view::transform(mHandlers, [](const auto& tool) {
+        auto funcObj = AJson::Object{
+            {"name", tool.second.name},
+            {"description", tool.second.description},
+            {"parameters", aui::to_json(tool.second.parameters)},
+            {"strict", tool.second.strict}
+        };
         return AJson::Object{
             {"type", tool.second.type },
-            {"function", aui::to_json(tool.second) },
+            {"function", funcObj },
         };
     }) | ranges::to<AJson::Array>();
 }

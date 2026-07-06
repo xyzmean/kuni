@@ -19,6 +19,8 @@
 #include "AUI/Util/kAUI.h"
 #include "IOpenAIChat.h"
 #include "OpenAIChatImpl.h"
+#include <regex>
+
 #include "config.h"
 #include "MetricsBreadcumbs.h"
 #include "WebSearch.h"
@@ -60,7 +62,7 @@ AFuture<std::valarray<double>> contextEmbedding(IOpenAIChat& openAI, ranges::ran
 AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
     .diaryDir = mInit.workingDir / "diary",
     .openAI = mInit.openAI,
-}), mWakeupTimer(_new<ATimer>(27min)) {
+}), mWakeupTimer(_new<ATimer>(27min)), mDiaryTimer(_new<ATimer>(12h)) {
     // mTools.addTool({
     //     .name = "send_telegram_message",
     //     .description = "Sends a message to a Telegram user.",
@@ -87,6 +89,15 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
     });
     mWakeupTimer->start();
 
+    connect(mDiaryTimer->fired, [this] {
+        // Diary dump is otherwise gated on accumulated token count (see diaryTokenCountTrigger), which a quiet
+        // conversation might never reach. Force a checkpoint every 12h regardless, so the diary isn't
+        // dependent on hitting a token threshold that may take days to reach in practice.
+        mDiaryDumpRequested = true;
+        mNotificationsSignal.supplyValue();
+    });
+    mDiaryTimer->start();
+
     getThread()->enqueue([&] {
         mAsync << [](AppBase& self) -> AFuture<> {
             // co_await self.mDiary.sleepingConsolidation();
@@ -94,6 +105,10 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
             co_await self.onBeforeMainLoop();
             for (;;) {
                 self.onOffline();
+                if (self.mDiaryDumpRequested) {
+                    self.mDiaryDumpRequested = false;
+                    co_await self.diaryDumpMessages();
+                }
                 if (self.mTemporaryContext.size() <= 1) {
                     // Alex2772 (Apr 19 2026):
                     // This approach is okay to revisit unfinished chats. However, if there are many unread chats,
@@ -268,6 +283,59 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                     }();
                     AUI_ASSERT(AThread::current() == self.getThread());
 
+                    if (!botAnswer.choices.empty() && botAnswer.choices.at(0).message.tool_calls.empty()) {
+                        // Fallback parser for models that reply with "tool call #name(args)" as plain text
+                        // instead of structured tool_calls.
+                        //
+                        // A naive non-greedy regex (`\((.*?)\)`) stops at the FIRST ')' it finds, which
+                        // truncates args as soon as the JSON payload contains a literal ')' inside a quoted
+                        // string (extremely common in Russian chat text, e.g. the ")))" smiley). That produces
+                        // invalid JSON in tool_calls[].function.arguments, which then poisons mTemporaryContext:
+                        // every subsequent request to the LLM API is rejected with HTTP 400 "invalid tool call
+                        // arguments" until the process is restarted. Instead, track bracket depth while ignoring
+                        // anything inside a quoted string, so parens inside string values don't end the match early.
+                        static const std::regex toolCallStartRegex(R"(tool call #([a-zA-Z0-9_]+)\()");
+                        std::string content = botAnswer.choices.at(0).message.content;
+                        auto begin = content.cbegin();
+                        std::smatch match;
+                        while (std::regex_search(begin, content.cend(), match, toolCallStartRegex)) {
+                            auto argsStart = match[0].second;
+                            int depth = 1;
+                            bool inString = false;
+                            bool escaped = false;
+                            auto it = argsStart;
+                            for (; it != content.cend() && depth > 0; ++it) {
+                                char c = *it;
+                                if (inString) {
+                                    if (escaped) {
+                                        escaped = false;
+                                    } else if (c == '\\') {
+                                        escaped = true;
+                                    } else if (c == '"') {
+                                        inString = false;
+                                    }
+                                    continue;
+                                }
+                                if (c == '"') {
+                                    inString = true;
+                                } else if (c == '(') {
+                                    ++depth;
+                                } else if (c == ')') {
+                                    --depth;
+                                }
+                            }
+                            if (depth != 0) {
+                                // unterminated call (model got cut off); nothing more to parse.
+                                break;
+                            }
+                            IOpenAIChat::Message::ToolCall tc;
+                            tc.function.name = match[1].str();
+                            tc.function.arguments = std::string(argsStart, std::prev(it));
+                            botAnswer.choices.at(0).message.tool_calls.push_back(tc);
+                            begin = it;
+                        }
+                    }
+
                     if (botAnswer.choices.empty() || botAnswer.choices.at(0).message.tool_calls.empty()) {
                         // no tool calls.
                         // each LLMs turn should end with "wait" or "pause"
@@ -353,9 +421,11 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                         // inject a reminder into the next turn's context.
                         if (!self.mAskCalledThisTurn) {
                             self.mTemporaryContext.last().content +=
-                                "\n[system] Note: you sent a message without consulting #ask this turn. "
-                                "Next time, call #ask before send_telegram_message to enrich your response "
-                                "with memories and context.";
+                                "\n[system] Your message(s) above were already sent successfully - do NOT call "
+                                "send_telegram_message again with the same or similar text, that would send a "
+                                "duplicate. You didn't consult #ask before sending. If it would meaningfully "
+                                "improve a FUTURE reply, call #ask now; otherwise call #wait or #pause to end "
+                                "your turn.";
                         }
                         goto naxyi_preserve_ctx;
                     } else {

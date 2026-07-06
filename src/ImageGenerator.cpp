@@ -17,7 +17,7 @@
 #include "AUI/IO/AFileInputStream.h"
 
 static constexpr auto LOG_TAG = "ImageGenerator";
-static constexpr auto TRIAL_COUNT = 10;
+static constexpr auto TRIAL_COUNT = 18;
 
 /**
  * @brief Minimize risk of generating too young/child characters.
@@ -41,7 +41,6 @@ AFuture<ImageGenerator::GalleryImage> ImageGenerator::generate(AString descripti
     ALOG_TRACE(LOG_TAG) << "generate: " << description;
     int trialIndex = 0;
 
-    naxyi:
     ALogger::info(LOG_TAG) << "Engineering initial prompt for: " << description;
     PromptPair currentPrompt {
         .positive = "",
@@ -127,10 +126,6 @@ AFuture<ImageGenerator::GalleryImage> ImageGenerator::generate(AString descripti
             //     co_return lastImage;
             // }
 
-            if (trialIndex % size_t(std::sqrt(TRIAL_COUNT)) == 0) {
-                ALogger::info(LOG_TAG) << "Last trial failed. Retrying with different prompt...";
-                goto naxyi;
-            }
         } catch (const AException& e) {
             ALogger::err(LOG_TAG) << "Failed to generate image: " << e;
         }
@@ -284,40 +279,38 @@ AFuture<ImageGenerator::AssessmentResult> ImageGenerator::assessImage(const AIma
     auto params = mChatParams;
     // Note: mChatParams.config should ideally be a vision-capable model.
     params.systemPrompt = R"(
-You are an extremely strict image critic and Stable Diffusion quality gate.
+You are an image critic and Stable Diffusion quality gate. Your job is to catch genuinely broken generations,
+not to demand pixel-perfect adherence to every detail of the description.
 
 You will be shown an image generated from a user description and a character appearance prompt.
-Your job is to decide whether the image is an almost perfect match.
-Be exceptionally picky: if there is any noticeable flaw, ambiguity, inconsistency, or implausible composition, reject it.
 
-Reject the image if ANY of the following are true:
+Reject the image ONLY if ANY of the following are true:
 - Any body part is malformed, missing, duplicated, fused, unnaturally small/large, or placed incorrectly.
-- Hands, fingers, arms, legs, feet, eyes, face, teeth, hair, or clothing look even slightly wrong, distorted, or inconsistent.
-- The character identity or appearance does not closely match the provided description.
-- The pose, physics, or composition is unreasonable or unnatural.
-- The character appears to be floating, flying, suspended, falling incorrectly, or otherwise violating expected
-  gravity/scene logic unless explicitly requested.
-- The scene contains awkward anatomy, weird perspective, broken proportions, or AI-like artifacts.
-- The image has any visible quality issue: blur, low detail, weird textures, melting, extra limbs, duplicate objects,
-  warped edges, bad lighting, or inconsistent shadows.
-- The image only partially satisfies the description.
-- You are uncertain whether the image is correct.
-- Canonical character design was not preserved.
-- Canonical character description includes all known facts about the character; including those that are not directly
-  related to the composition requested by the user.
-- If the user's description overrides a canonical detail, the image must follow the description, not the canonical
-  detail. Canonical design is the fallback only when the description does not specify an alternative.
+- Hands, fingers, arms, legs, feet, eyes, face, or teeth are clearly distorted or anatomically broken (not just
+  stylized - anime/illustration style is expected, not a defect).
+- The character is clearly a different person/species/design than described (e.g. wrong hair color, wrong core
+  identity), not just missing a minor accessory or wearing a slightly different but plausible outfit.
+- The pose or composition is physically nonsensical (e.g. impossible limb bends, floating without reason).
+- The image has a serious visible quality defect: heavy blur, melting textures, extra limbs, duplicate objects,
+  warped edges, or obvious AI artifacts.
 - "explicit nudity", unless asked.
+- The character appears to be a child.
+
+Do NOT reject for:
+- Minor mismatches in exact outfit, jewelry, background, or color shade that aren't central to the description.
+- Expression being "close enough" (e.g. smiling instead of an exact micro-expression like "calm smile").
+- Missing minor props or details not critical to the requested vibe of the photo.
+- Stylistic anime rendering choices (proportions, line art, shading) - this is not a photorealistic render.
 
 Important rule:
-- If there is any reasonable doubt, set "satisfied" to false.
-- Use canonical character design as the default baseline, but let the user's description override any conflicting details.
-- If canonical says one thing and description says another, judge the image against the description.
-- Only set "satisfied" to true if the image is excellent, coherent, anatomically correct, compositionally plausible, and
-  closely matches the description.
+- Use canonical character design as the default baseline, but let the user's description override any conflicting
+  details; if canonical says one thing and description says another, judge the image against the description.
+- Give the benefit of the doubt on subjective/minor details. Only reject for the concrete defects listed above.
+- Set "satisfied" to true if the image is coherent, anatomically fine, and reasonably matches the overall vibe of
+  the description - it does not need to be a perfect match.
 
 Output your assessment in JSON format with the following fields:
-- "satisfied": boolean, true if the image is high quality and matches the description.
+- "satisfied": boolean, true if the image has no serious defects and reasonably matches the description.
 - "feedback": string, explaining what's wrong if not satisfied.
 
 {}
