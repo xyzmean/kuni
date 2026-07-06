@@ -7,7 +7,7 @@
 #include <OpenAIChatImpl.h>
 
 namespace util {
-AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, IOpenAIChat::Session context, AStringView previousWorkingMemory) {
+AFuture<AString> importantThingsToRemember(AppBase& app, IOpenAIChat& openAI, IOpenAIChat::Session context, AStringView previousWorkingMemory) {
     using namespace std::chrono_literals;
 
     AString prompt = "What are important things in timespan {} (3 days) you should remember?\n"_format(formatPastHours(24h * 3));
@@ -56,7 +56,7 @@ AFuture<AString> importantThingsToRemember(IOpenAIChat& openAI, IOpenAIChat::Ses
     bool shitCheckTriggered = false;
     for (;;) {
         auto content = (co_await openAI.chat({
-            .systemPrompt = AppBase::getSystemPrompt(),
+            .systemPrompt = app.getSystemPrompt(),
             .config = config().llm,
         }, context)).choices.at(0).message.content;
         if (content.contains("tool_calls") || content.contains("ask")) {

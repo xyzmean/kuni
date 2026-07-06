@@ -94,31 +94,14 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
             co_await self.onBeforeMainLoop();
             for (;;) {
                 self.onOffline();
-                if (self.mTemporaryContext.size() <= 1) {
-                    // Alex2772 (Apr 19 2026):
-                    // This approach is okay to revisit unfinished chats. However, if there are many unread chats,
-                    // a long toolcall chain will occur, leading to context high usage and high processing costs.
-                    // this happens because chat between C++ <-> Kuni's main LLM (mTemporaryContext) never gives
-                    // turn to OpenAIChat::Role::USER, "conversation" happens between OpenAIChat::Role::ASSISTANT and
-                    // OpenAIChat::Role::TOOL only. We ask to dump context on OpenAIChat::Role::USER's only.
-                    //
-                    // Solution: before infinite loop of this coroutine, send notifications on per-chat basis
-                    // to read these chats (onBeforeMainLoop()).
-
-                    try {
-                        // this thing emulates "middle" memory of human - tasks, promises and other stuff
-                        // in timespan 1-3d.
-                        auto msg = co_await self.onCleanContext();
-                        if (!msg.empty()) {
-                            self.passNotificationToAI(std::move(msg), {}, true);
-                        }
-                    } catch (const AException& e) {
-                        ALogger::err(LOG_TAG) << "Can't open " << (self.mInit.workingDir / WORKING_MEMORY_PATH) << ": "<< e;
-                    }
+                if (self.mSystemPromptSuffix.empty()) {
+                    // this thing emulates "middle" memory of human - tasks, promises and other stuff
+                    // in timespan 1-3d.
+                    self.mSystemPromptSuffix = co_await self.onCleanContext();
                 }
     #ifndef AUI_TESTS_MODULE
                 if (config().randomlyGoSleep) {
-                    if (std::uniform_real_distribution(0.0, 1.0)(re) < 0.1) {
+                    if (std::uniform_real_distribution(0.0, 1.0)(re) < 0.01) {
                         // 1. randomly go afk is humane
                         // 2. reduce resource usage:
                         //    - less conversations would be made
@@ -169,6 +152,7 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                             });
                         }
                     }
+                    ALOG_DEBUG(LOG_TAG) << "Processing notification: " << notification.message;
 
                     self.mTemporaryContext << IOpenAIChat::Message{
                         .role = IOpenAIChat::Message::Role::USER,
@@ -257,7 +241,7 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                     IOpenAIChat::Response botAnswer = co_await [&]() -> AFuture<IOpenAIChat::Response> {
                         MetricsBreadcumbs::Point metric(self.metricBreadcumbs(), "function", "notification processing loop");
                         auto response = self.openAI()->chatStreaming( {
-                            .systemPrompt = getSystemPrompt(),
+                            .systemPrompt = self.getSystemPrompt(),
                             .tools = notification.actions.asJson(),
                         }, self.mTemporaryContext);
                         connect(response->response.changed, self, [&self](IOpenAIChat::Response response) {
@@ -398,7 +382,7 @@ AFuture<> AppBase::diaryDumpMessages() {
         buf << AFileInputStream(mInit.workingDir / WORKING_MEMORY_PATH);
         previousWorkingMemory = AStringView(buf.data(), buf.size());
     }
-    auto importantThingsToRemember = util::importantThingsToRemember(*openAI(), mTemporaryContext, previousWorkingMemory);
+    auto importantThingsToRemember = util::importantThingsToRemember(*this, *openAI(), mTemporaryContext, previousWorkingMemory);
 
     co_await util::diarySaveEntries(mDiary, mTemporaryContext, {
         .systemPrompt = getSystemPrompt(),
@@ -410,6 +394,7 @@ AFuture<> AppBase::diaryDumpMessages() {
         AFileOutputStream(mInit.workingDir / WORKING_MEMORY_PATH) << workingMemoryMd;
     }
     mTemporaryContext.clear();
+    mSystemPromptSuffix.clear();
 }
 
 void AppBase::actProactively() {
@@ -529,9 +514,9 @@ AString AppBase::takeDiaryEntry(const Diary::EntryExAndRelatedness& i) {
     return result;
 }
 
-AString AppBase::getSystemPrompt()
+AString AppBase::getSystemPrompt() const
 {
-    auto prompt = "{}\n\n{}\n\n<your_appearance>\n{}\n</your_appearance>"_format(prompts().system, prompts().characterBase, prompts().characterAppearance);
+    auto prompt = "{}\n\n{}\n\n<your_appearance>\n{}\n</your_appearance>\n{}"_format(prompts().system, prompts().characterBase, prompts().characterAppearance, mSystemPromptSuffix);
     if (config().lockdown != Config::LockdownMode::NONE) {
         prompt += "\nYou are currently under lockdown mode. This means you can access to subset of chats only.";
     }
