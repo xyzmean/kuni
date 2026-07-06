@@ -330,7 +330,12 @@ OpenAITools::Tool tools::sendTelegramMessage(
                 }
                 return str;
             };
+            AString originalMessage = message;
             message = trySimulateTypos(std::move(message));
+            AOptional<AString> correctionMessage;
+            if (message != originalMessage && originalMessage.length() < 30 && !originalMessage.contains("\n")) {
+                correctionMessage = "*" + originalMessage;
+            }
 
             AString result;
             // actually send a message. we don't really need to wait until tdlib reports message sent
@@ -358,6 +363,12 @@ OpenAITools::Tool tools::sendTelegramMessage(
                 auto sent = co_await util::telegramPostMessage(
                     *telegram, chat->id_, message, std::move(photo), std::move(audioPath), replyTo);
                 result += "Message sent successfully to \"{}\"; message_id={}, text=\"{}\"."_format(chat->title_, sent->id_, llmui::extractMessageTypeAndText(*sent));
+
+                if (correctionMessage) {
+                    co_await simulateTypingDelay(correctionMessage->length());
+                    auto sentCorr = co_await util::telegramPostMessage(*telegram, chat->id_, *correctionMessage, {}, {}, 0);
+                    result += "\nCorrection message sent: text=\"{}\"."_format(llmui::extractMessageTypeAndText(*sentCorr));
+                }
             }
 
 

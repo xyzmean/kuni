@@ -427,6 +427,11 @@ AppBase::AppBase(Init init): mInit(std::move(init)), mDiary({
                         }
                         continue;
                     }
+                    if (botAnswer.usage.total_tokens >= config().diaryTokenCountTrigger) {
+                        ALogger::info(LOG_TAG) << "Token limit exceeded during tool calls chain. Forcing context dump.";
+                        co_await self.diaryDumpMessages();
+                        continue;
+                    }
                     if (!notification.actions.handlers().empty()) {
                         self.mTemporaryContext.last().content += "\nWhat's your next action? Use a `tool` to act. Use #ask to consult with your knowledge database. The following tools available: " + AStringVector(notification.actions.handlers().keyVector()).join(", ");
                     }
